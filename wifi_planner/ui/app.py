@@ -1,4 +1,4 @@
-"""Ventana principal de Wi-Fi Planner (Fase 3: editor 2D)."""
+"""Ventana principal de Wi-Fi Planner (Fase 4: editor + heatmap)."""
 
 from __future__ import annotations
 
@@ -7,21 +7,29 @@ from tkinter import messagebox, ttk
 
 from core.material import MaterialAttenuationError
 from ui import theme
+from ui.coverage_renderer import build_heatmap_image
 from ui.dialogs import ProjectDimensionsDialog
 from ui.editor_canvas import EditorCanvas
 from ui.panels import PropertiesPanel, Toolbar
 from ui.session import EditorSession, Tool
 from ui.viewport import Viewport
 
+# Debounce del heatmap (ms). El valor es configurable por instancia.
+HEATMAP_DEBOUNCE_MS = 150
+
 
 class WifiPlannerApp(tk.Tk):
-    """Editor 2D: Project es la fuente de verdad; Canvas solo pinta."""
+    """Editor 2D + heatmap. Project = fuente de verdad; Canvas = pintura."""
 
-    def __init__(self, session: EditorSession | None = None) -> None:
+    def __init__(
+        self,
+        session: EditorSession | None = None,
+        heatmap_debounce_ms: int = HEATMAP_DEBOUNCE_MS,
+    ) -> None:
         super().__init__()
         self.title("Wi-Fi Planner")
-        self.geometry("1100x720")
-        self.minsize(900, 600)
+        self.geometry("1180x760")
+        self.minsize(960, 640)
         self.configure(bg=theme.BG)
 
         self.session = session if session is not None else EditorSession()
@@ -29,13 +37,16 @@ class WifiPlannerApp(tk.Tk):
             world_width_m=self.session.floor_width_m,
             world_height_m=self.session.floor_height_m,
         )
+        self._heatmap_debounce_ms = int(heatmap_debounce_ms)
+        self._heatmap_after_id = None
 
         self._apply_theme()
         self._build_layout()
         self._bind_keys()
 
-        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.after(50, self._initial_render)
+        self.after(80, self._schedule_heatmap)
 
     # ------------------------------------------------------------------
     # Layout
@@ -52,7 +63,6 @@ class WifiPlannerApp(tk.Tk):
                 style.configure(name, **opts)
             except tk.TclError:
                 pass
-        # Radiobutton legible en tema oscuro
         style.configure(
             "TRadiobutton",
             background=theme.BG,
@@ -66,7 +76,6 @@ class WifiPlannerApp(tk.Tk):
         )
 
     def _build_layout(self) -> None:
-        # Toolbar arriba
         self.toolbar = Toolbar(
             self,
             on_tool=self._on_tool,
@@ -74,10 +83,11 @@ class WifiPlannerApp(tk.Tk):
             on_simulate=self._on_simulate,
             on_dimensions=self._on_dimensions,
             on_delete=self._on_delete,
+            on_resolution=self._on_resolution,
+            on_heatmap_toggle=self._on_heatmap_toggle,
         )
         self.toolbar.pack(fill="x", padx=6, pady=(6, 2))
 
-        # Centro: canvas + panel derecho
         middle = ttk.Frame(self)
         middle.pack(fill="both", expand=True, padx=6, pady=2)
 
@@ -98,10 +108,9 @@ class WifiPlannerApp(tk.Tk):
         )
         self.properties.pack(side="right", fill="y", padx=(6, 0))
 
-        # Barra de estado: coordenadas en metros
         self.status = ttk.Label(
             self,
-            text="X: — m    Y: — m    |    Escala: — px/m    |    Fuente de verdad: Project (metros)",
+            text="X: — m    Y: — m    |    Heatmap: pendiente",
             style="StatusBar.TLabel",
             anchor="w",
         )
@@ -113,7 +122,6 @@ class WifiPlannerApp(tk.Tk):
         def make_tool_handler(tool: Tool):
             def handler(event):
                 widget = event.widget
-                # No robar atajos mientras se escribe en un campo de texto
                 if isinstance(widget, (tk.Entry, tk.Text, ttk.Entry, ttk.Combobox)):
                     return None
                 self._set_tool(tool)
@@ -134,13 +142,21 @@ class WifiPlannerApp(tk.Tk):
         self.render_project()
         self.properties.refresh()
 
+    def _on_close(self) -> None:
+        if self._heatmap_after_id is not None:
+            try:
+                self.after_cancel(self._heatmap_after_id)
+            except tk.TclError:
+                pass
+            self._heatmap_after_id = None
+        self.destroy()
+
     # ------------------------------------------------------------------
     # Callbacks de UI
     # ------------------------------------------------------------------
 
     def _set_tool(self, tool: Tool) -> None:
         self.session.set_tool(tool)
-        # Sincronizar radiobuttons de la toolbar
         self.toolbar._tool_var.set(tool.value)
         self.render_project()
 
@@ -149,12 +165,30 @@ class WifiPlannerApp(tk.Tk):
         self.render_project()
 
     def _on_band(self, band_id: str) -> None:
-        self.session.band_id = band_id
+        self.session.set_band(band_id)  # invalida heatmap si cambió
+        self._schedule_heatmap()
+
+    def _on_resolution(self, resolution_m: float) -> None:
+        try:
+            self.session.set_grid_resolution(resolution_m)
+        except ValueError as exc:
+            messagebox.showwarning("Resolución", str(exc), parent=self)
+            return
+        self._schedule_heatmap()
+
+    def _on_heatmap_toggle(self, enabled: bool) -> None:
+        self.session.set_heatmap_enabled(enabled)
+        if enabled:
+            self._schedule_heatmap()
+        else:
+            self.canvas.clear_heatmap()
+            self.properties.show_heatmap_text("Heatmap desactivado.")
 
     def _on_delete(self) -> None:
         if self.session.delete_selection():
             self.render_project()
             self.properties.refresh()
+            self._schedule_heatmap()
 
     def _on_dimensions(self) -> None:
         def apply(w: float, h: float) -> None:
@@ -162,6 +196,7 @@ class WifiPlannerApp(tk.Tk):
             self.viewport.set_world_size(w, h)
             self.render_project()
             self._update_status_coords(None, None)
+            self._schedule_heatmap()
 
         ProjectDimensionsDialog(
             self,
@@ -171,19 +206,25 @@ class WifiPlannerApp(tk.Tk):
         )
 
     def _on_simulate(self) -> None:
+        """Simulación puntual (resumen) + heatmap del grid."""
         try:
             self.session.run_simulation(self.session.band_id)
         except MaterialAttenuationError as exc:
             self.session.last_simulation_error = (
-                f"Banda sin datos de atenuación:\n{exc}\n"
-                "(no se inventan valores; usa 2.4 o 5 GHz)."
+                "No hay datos de atenuación de materiales para esta banda.\n"
+                f"Detalle: {exc}\n"
+                "(no se inventan valores ni hay fallback a 5 GHz)."
             )
             self.properties.show_simulation_text(self.session.last_simulation_error)
+            self.properties.show_heatmap_text(self.session.last_simulation_error)
+            self.session.last_heatmap_error = self.session.last_simulation_error
+            self.canvas.clear_heatmap()
             return
         except ValueError as exc:
             messagebox.showinfo("Simulación", str(exc), parent=self)
             return
         self.properties.show_simulation_text(self.session.simulation_summary_text())
+        self._schedule_heatmap()
 
     def _on_cursor(self, x_m: float, y_m: float) -> None:
         self._update_status_coords(x_m, y_m)
@@ -195,10 +236,15 @@ class WifiPlannerApp(tk.Tk):
             coords = f"X: {x_m:.2f} m    Y: {y_m:.2f} m"
         scale = self.viewport.scale
         dims = f"{self.session.floor_width_m:g} × {self.session.floor_height_m:g} m"
+        heat = "sí" if self.session.heatmap_enabled else "no"
+        if self.session.heatmap_dirty and self.session.heatmap_enabled:
+            heat = "recalculando…"
+        elif self.session.last_heatmap is not None and not self.session.heatmap_dirty:
+            heat = "actualizado"
         self.status.configure(
             text=f"{coords}    |    Espacio: {dims}    |    "
-            f"Escala: {scale:.1f} px/m (uniforme)    |    "
-            f"Herramienta: {self.session.tool.value}"
+            f"Escala: {scale:.1f} px/m | Res. grid: {self.session.grid_resolution_m:g} m | "
+            f"Heatmap: {heat} | Herramienta: {self.session.tool.value}"
         )
 
     def _on_escape(self, _event=None) -> str:
@@ -209,11 +255,75 @@ class WifiPlannerApp(tk.Tk):
         return "break"
 
     def _on_model_changed(self) -> None:
-        """Modelo actualizado => redibujar Canvas + refrescar propiedades."""
+        """Modelo cambió => redibujar + refrescar + programar heatmap."""
         self.render_project()
         self.properties.refresh()
-        # Radiobuttons de herramienta pueden estar desfasados tras create+select
         self.toolbar._tool_var.set(self.session.tool.value)
+        self._schedule_heatmap()
+
+    # ------------------------------------------------------------------
+    # Heatmap (debounce + engine + renderer)
+    # ------------------------------------------------------------------
+
+    def _schedule_heatmap(self) -> None:
+        """Debounce: evita recalcular en cada evento de un arrastre."""
+        if not self.session.heatmap_enabled:
+            self.canvas.clear_heatmap()
+            return
+        if self._heatmap_after_id is not None:
+            try:
+                self.after_cancel(self._heatmap_after_id)
+            except tk.TclError:
+                pass
+            self._heatmap_after_id = None
+        self.session.invalidate_heatmap()
+        self._update_status_coords(None, None)
+        self.properties.show_heatmap_text("Calculando cobertura...")
+        self._heatmap_after_id = self.after(
+            self._heatmap_debounce_ms, self._run_heatmap_now
+        )
+
+    def _run_heatmap_now(self) -> None:
+        self._heatmap_after_id = None
+        if not self.session.heatmap_enabled:
+            self.canvas.clear_heatmap()
+            return
+        try:
+            result = self.session.run_heatmap()
+        except MaterialAttenuationError as exc:
+            self.session.last_heatmap_error = (
+                "No hay datos de atenuación de materiales "
+                "para la banda seleccionada (p. ej. 6 GHz).\n"
+                f"Detalle: {exc}"
+            )
+            self.canvas.clear_heatmap()
+            self.render_project()
+            self.properties.show_heatmap_text(self.session.last_heatmap_error)
+            self._update_status_coords(None, None)
+            return
+        except ValueError as exc:
+            # Sin AP u otro error de modelo: no es fatal para el editor
+            self.session.last_heatmap_error = str(exc)
+            self.canvas.clear_heatmap()
+            self.render_project()
+            self.properties.show_heatmap_text(str(exc))
+            self._update_status_coords(None, None)
+            return
+
+        # Render: metros → píxeles solo vía Viewport
+        image = build_heatmap_image(
+            result,
+            self.viewport,
+            cell_size_m=self.session.grid_resolution_m,
+        )
+        self.canvas.draw_heatmap(image)
+        # render_project re-aplica la capa heatmap bajo paredes/APs
+        self.render_project()
+        self.properties.show_heatmap_text(self.session.heatmap_stats_text())
+        clients = self.session.client_rssi_lines()
+        if clients:
+            self.properties.append_heatmap_text("\nClientes:\n" + "\n".join(clients))
+        self._update_status_coords(None, None)
 
     # ------------------------------------------------------------------
     # Render (fuente de verdad: Project)

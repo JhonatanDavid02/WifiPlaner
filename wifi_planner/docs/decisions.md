@@ -162,6 +162,104 @@ discrepancia se resolvió de forma silenciosa.
 
 ---
 
+## Decisiones Fase 4 (heatmap y simulación espacial)
+
+### Decisión L — Criterio de puntos del `CoverageGrid`
+
+- **Decisión:**
+  - Puntos en múltiplos enteros de `resolution_m` desde el origen
+    `(0,0), (r,0), (2r,0), …`.
+  - Si la dimensión **no** es múltiplo exacto, se añade un punto final
+    en el borde (`width_m` o `height_m`) para no dejar una franja sin
+    muestrear.
+  - Todos los puntos cumplen `0 ≤ x ≤ width_m` e idem para y.
+- **Ejemplo (aceptado):** piso 12 × 8 m a `0.50 m` → ejes
+  0, 0.5, …, 12 (25 valores) × 0, 0.5, …, 8 (17 valores) = **425**
+  puntos (25 × 17).
+- **Límites de estabilidad V1:**
+  - `resolution_m ≥ MIN_RESOLUTION_M = 0.05 m`
+  - `point_count ≤ MAX_GRID_POINTS = 100_000`
+  - Resolución y límites **configurables/documentedos**, no mágicos.
+- **Razón:** malla regular, reproducible y con tope para no congelar
+  la UI en la V1 (sin hilos/GPU complejos).
+
+### Decisión M — Heatmap con UN solo AP
+
+- **Decisión:** el heatmap V1 simula **un** AP: el seleccionado, o el
+  primero del proyecto si no hay selección (`resolve_ap_for_heatmap`).
+- **Razón:** Fase 5 combinará multi-AP con `combine_results`. Mezclar
+  varios AP en el heatmap de Fase 4 sin combinar rompería la
+  semántica de `SimulationResult` (un AP por evaluación).
+
+### Decisión N — Disclaimer obligatorio de estimación
+
+- **Decisión:** la UI y la documentación del heatmap deben indicar
+  que es una **estimación predictiva** del modelo configurado
+  (FSPL + presupuesto de enlace + atenuación de materiales),
+  **no** una simulación electromagnética completa ni un sustituto
+  de mediciones en sitio.
+- **Razón:** honestidad del modelo; evita interpretar el mapa de
+  color como medición real.
+
+### Decisión O — Invalidación del heatmap
+
+- **Decisión:** el heatmap se marca `heatmap_dirty` (y se borra de la
+  capa Canvas) al cambiar: posición de AP, banda, resolución de grid,
+  dimensiones del piso, añadir/eliminar pared o AP, material o
+  espesor de pared. La App lo recalcula con **debounce ~150 ms**
+  (sin hilos complejos en Fase 4).
+- **Razón:** evitar mostrar un mapa obsoleto tras editar el modelo.
+  Durante el recálculo se muestra «Calculando cobertura…».
+
+### Decisión P — Denominador de % de cobertura
+
+- **Decisión:** el porcentaje de cobertura usa como denominador
+  **todos los puntos del grid** (no solo los que superan un umbral).
+  Las clases se reportan como % del total de puntos evaluados.
+- **Razón:** evita métricas engañosas (p. ej. 100 % “Excelente”
+  sobre un subconjunto vacío o sesgado).
+
+### Decisión Q — Capas del editor y heatmap
+
+- **Decisión:** orden de pintado: suelo + rejilla → **heatmap** →
+  paredes → APs / clientes → selección / leyenda. El hit-testing
+  (selección) **no** se bloquea por la capa del heatmap (usa
+  coordenadas de mundo, no ids del Canvas para decidir el target).
+- **Razón:** el heatmap es decorativo/informativo; la interacción
+  del editor no debe cambiar.
+
+### Decisión R — 6 GHz en el heatmap
+
+- **Decisión:** si el usuario elige `band_6` y hay paredes que
+  requieren atenuación, el heatmap muestra un error comprensible
+  (sin ocultar `MaterialAttenuationError`) y **no** pinta un mapa
+  falso. No hay fallback 5 → 6 GHz.
+- **Razón:** coherencia con decisiones J / 6 GHz de Fase 1–2.
+
+### Decisión S — Clientes no sustituyen el grid
+
+- **Decisión:** los clientes son puntos de interés **adicionales**
+  (RSSI/SOM en su posición si coinciden o se aproximan a un punto
+  del grid). El heatmap **siempre** se calcula sobre el
+  `CoverageGrid` completo, no solo sobre clientes.
+- **Razón:** el mapa de cobertura debe ser espacialmente continuo;
+  unos pocos clientes dejarían huecos enormes.
+
+### Decisión T — Piso de distancia cuando el punto está sobre el AP
+
+- **Decisión:** si la distancia AP → punto es **exactamente 0**
+  (punto del grid que cae en la posición del AP), `evaluate_link`
+  evalúa FSPL con `MIN_FSPL_DISTANCE_M = 0.1 m` (piso numérico).
+  La distancia reportada en `LinkEvaluation.distance_m` sigue siendo
+  la geométrica real (0.0).
+- **Razón:** `FSPL = 20·log10(d) + …` no está definida en `d = 0`
+  (`path_loss_fspl_db` lanza `ValueError`, comportamiento correcto y
+  congelado). El heatmap no puede fallar por un punto sobre el AP.
+- **No se reescribe la fórmula FSPL:** el piso vive solo en
+  `evaluate_link` y es documentado. Para `d > 0` no hay cambio.
+
+---
+
 ## Discrepancias encontradas (no resueltas silenciosamente)
 
 ### 1. Distancias `d_max` contradictorias

@@ -32,6 +32,7 @@ from engine.obstacles import (
     ObstacleTraceResult,
 )
 from engine.classifier import classify_quality, meets_rssi_target, classify_som
+from engine.coverage_grid import CoverageGrid, MAX_GRID_POINTS, MIN_RESOLUTION_M
 from engine.simulator import simulate_coverage
 from engine.combine import combine_results
 
@@ -55,6 +56,9 @@ __all__ = [
     "classify_quality",
     "meets_rssi_target",
     "classify_som",
+    "CoverageGrid",
+    "MAX_GRID_POINTS",
+    "MIN_RESOLUTION_M",
     "simulate_coverage",
     "combine_results",
 ]

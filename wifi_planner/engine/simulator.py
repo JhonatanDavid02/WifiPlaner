@@ -1,14 +1,12 @@
 """Simulador de cobertura.
 
-Fase 2: el simulador integra el trazado de paredes real (AP → punto →
-materiales) para calcular L_obstacles antes del link budget.
-
 Flujo por punto:
 
     distancia → FSPL → trace_walls (L_obstacles) → link_budget
         → P_rx / SOM → clasificación
 
-La simulación sobre cuadrícula (grid/heatmap) llega en Fase 4.
+Fase 4: la simulación espacial (heatmap) reutiliza esta misma función
+pasando los puntos de ``CoverageGrid``. No hay fórmulas duplicadas.
 La UI NUNCA ejecuta fórmulas; solo llama a este módulo y pinta resultados.
 """
 
@@ -138,14 +136,22 @@ def _compute_stats(evaluations: list[LinkEvaluation], project) -> dict:
 
     target = project.thresholds.rssi_target_dbm
     meets_count = sum(1 for e in evaluations if e.rssi_meets_target)
+    total = len(evaluations)
+
+    # Porcentajes por clase. Denominador: puntos totales evaluados (grid).
+    quality_percent = {
+        key: round(100.0 * count / total, 2)
+        for key, count in quality_counts.items()
+    }
 
     return {
-        "point_count": len(evaluations),
+        "point_count": total,
         "rx_min_dbm": min(rx_values),
         "rx_max_dbm": max(rx_values),
-        "rx_avg_dbm": round(sum(rx_values) / len(rx_values), 2),
+        "rx_avg_dbm": round(sum(rx_values) / total, 2),
         "quality_counts": quality_counts,
+        "quality_percent": quality_percent,
         "rssi_target_dbm": target,
         "points_meeting_target": meets_count,
-        "coverage_ratio": round(meets_count / len(evaluations), 4),
+        "coverage_ratio": round(meets_count / total, 4),
     }

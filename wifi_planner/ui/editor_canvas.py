@@ -45,6 +45,10 @@ class EditorCanvas(tk.Canvas):
         self._drag_ap_id: str | None = None
         self._drag_client_id: str | None = None
         self._preview_end: Point2D | None = None
+        # Imagen PIL del heatmap (se re-aplica tras cada render completo).
+        self._heatmap_image = None
+        # Referencia viva a la PhotoImage de Tk (evita GC).
+        self._heatmap_photo = None
 
         self.bind("<Configure>", self._on_configure)
         self.bind("<Motion>", self._on_motion)
@@ -63,24 +67,82 @@ class EditorCanvas(tk.Canvas):
         self.viewport.set_canvas_size(self.winfo_width(), self.winfo_height())
         self.render_project()
 
+    def clear_heatmap(self) -> None:
+        """Elimina la capa del heatmap (resultado invalidado)."""
+        self.delete("heatmap")
+        self._heatmap_image = None
+        self._heatmap_photo = None
+
+    def draw_heatmap(self, image) -> None:
+        """Dibuja la imagen Pillow del heatmap bajo las entidades.
+
+        Args:
+            image: Imagen RGBA (PIL) del área del piso, o None para limpiar.
+        """
+        self._heatmap_image = image
+        self._place_heatmap_item()
+
+    def _place_heatmap_item(self) -> None:
+        """Inserta la imagen del heatmap como capa intermedia y rebaja su z-order."""
+        self.delete("heatmap")
+        self._heatmap_photo = None
+        if self._heatmap_image is None:
+            return
+        from PIL import ImageTk
+
+        x1, y1, _x2, _y2 = self.viewport.floor_rect_px
+        self._heatmap_photo = ImageTk.PhotoImage(self._heatmap_image)
+        # tag "heatmap": capa intermedia; no interfiere con hit-testing
+        # (la selección usa coordenadas de mundo, no ids de Canvas).
+        self.create_image(x1, y1, image=self._heatmap_photo, anchor="nw", tags=("heatmap",))
+        self.tag_lower("heatmap")
+
     def render_project(self) -> None:
-        """Redibuja todo el Canvas desde el Project (fuente de verdad)."""
+        """Redibuja todo el Canvas desde el Project (fuente de verdad).
+
+        El heatmap (si existe) se conserva como imagen PIL y se re-coloca
+        por encima del fondo, debajo de paredes/APs/clientes.
+        """
         self.delete("all")
+        self._heatmap_photo = None
         vp = self.viewport
 
         # Ajustar viewport al piso actual
         vp.set_world_size(self.session.floor_width_m, self.session.floor_height_m)
 
-        # Rejilla suave
+        # 1) Rejilla + rect del piso (fondo)
         self._draw_grid()
+        self._draw_floor_rect()
 
-        # Rect del piso
+        # 2) Heatmap (capa intermedia, bajo las entidades)
+        self._place_heatmap_item()
+
+        # 3) Paredes
+        self._draw_walls()
+
+        # Vista previa de pared en curso
+        if self.session.tool == Tool.WALL and self.session.wall_drag_start is not None:
+            if self._preview_end is not None:
+                sx1, sy1 = vp.world_to_screen(self.session.wall_drag_start)
+                sx2, sy2 = vp.world_to_screen(self._preview_end)
+                self.create_line(
+                    sx1, sy1, sx2, sy2,
+                    fill=theme.WALL_PREVIEW, width=2, dash=(4, 3),
+                )
+
+        # 4) APs / clientes (siempre visibles sobre el heatmap)
+        self._draw_aps_and_clients()
+
+        # 5) Leyenda de cobertura
+        self._draw_legend()
+
+    def _draw_floor_rect(self) -> None:
+        vp = self.viewport
         x1, y1, x2, y2 = vp.floor_rect_px
         self.create_rectangle(
             x1, y1, x2, y2,
             fill=theme.FLOOR_FILL, outline=theme.FLOOR_OUTLINE, width=2,
         )
-        # Etiquetas de dimensiones
         w, h = self.session.floor_width_m, self.session.floor_height_m
         self.create_text(
             (x1 + x2) / 2, y1 - 14,
@@ -91,7 +153,8 @@ class EditorCanvas(tk.Canvas):
             text=f"{h:g} m", fill=theme.TEXT_DIM, font=("Segoe UI", 9),
         )
 
-        # Paredes
+    def _draw_walls(self) -> None:
+        vp = self.viewport
         selected = self.session.selection
         for wall in self.session.floor.walls:
             sx1, sy1 = vp.world_to_screen(wall.segment.start)
@@ -104,7 +167,6 @@ class EditorCanvas(tk.Canvas):
             color = theme.WALL_SELECTED if is_sel else theme.WALL_COLOR
             width = 4 if is_sel else 3
             self.create_line(sx1, sy1, sx2, sy2, fill=color, width=width, capstyle="round")
-            # Etiqueta material en el centro
             mx, my = vp.world_to_screen(
                 Point2D(
                     (wall.segment.start.x + wall.segment.end.x) / 2,
@@ -116,17 +178,9 @@ class EditorCanvas(tk.Canvas):
                 fill=theme.TEXT_DIM, font=("Segoe UI", 7),
             )
 
-        # Vista previa de pared en curso
-        if self.session.tool == Tool.WALL and self.session.wall_drag_start is not None:
-            if self._preview_end is not None:
-                sx1, sy1 = vp.world_to_screen(self.session.wall_drag_start)
-                sx2, sy2 = vp.world_to_screen(self._preview_end)
-                self.create_line(
-                    sx1, sy1, sx2, sy2,
-                    fill=theme.WALL_PREVIEW, width=2, dash=(4, 3),
-                )
-
-        # APs
+    def _draw_aps_and_clients(self) -> None:
+        vp = self.viewport
+        selected = self.session.selection
         for ap in self.session.project.access_points:
             sx, sy = vp.world_to_screen(ap.position)
             is_sel = (
@@ -136,7 +190,6 @@ class EditorCanvas(tk.Canvas):
             )
             self._draw_ap(sx, sy, theme.AP_SELECTED if is_sel else theme.AP_COLOR, ap.id)
 
-        # Clientes
         for client in self.session.project.clients:
             sx, sy = vp.world_to_screen(client.position)
             is_sel = (
@@ -154,6 +207,35 @@ class EditorCanvas(tk.Canvas):
                 sx, sy + 14, text=client.id,
                 fill=theme.TEXT_LABEL, font=("Segoe UI", 7),
             )
+
+    def _draw_legend(self) -> None:
+        """Leyenda de cobertura (umbrales del modelo, no mágicos)."""
+        from ui.coverage_renderer import legend_rows
+
+        rows = legend_rows(self.session.project.thresholds)
+        x, y = 12, 12
+        width, row_h = 148, 16
+        height = 22 + row_h * len(rows) + 6
+
+        self.create_rectangle(
+            x, y, x + width, y + height,
+            fill="#1a1a28", outline=theme.FLOOR_OUTLINE, stipple="gray50",
+        )
+        self.create_text(
+            x + 8, y + 12, anchor="w",
+            text="Cobertura Wi-Fi", fill=theme.FG, font=("Segoe UI", 9, "bold"),
+        )
+        yy = y + 26
+        for row in rows:
+            r, g, b = row["color"]
+            hex_color = f"#{r:02x}{g:02x}{b:02x}"
+            self.create_rectangle(x + 8, yy, x + 20, yy + 10, fill=hex_color, outline="")
+            self.create_text(
+                x + 26, yy + 5, anchor="w",
+                text=f"{row['label']} {row['range']}",
+                fill=theme.FG_DIM, font=("Segoe UI", 7),
+            )
+            yy += row_h
 
     def _draw_grid(self) -> None:
         vp = self.viewport
@@ -261,9 +343,11 @@ class EditorCanvas(tk.Canvas):
             self._preview_end = self._snap_world(world)
             self.render_project()
 
-        # Arrastre de AP / cliente
+        # Arrastre de AP / cliente: solo repinta el plano; el heatmap se
+        # invalida en el modelo y se recalcula al soltar (debounce en App).
         if self._drag_ap_id:
             self.session.move_ap(self._drag_ap_id, self._snap_world(world))
+            self.clear_heatmap()
             self.render_project()
         elif self._drag_client_id:
             self.session.move_client(self._drag_client_id, self._snap_world(world))
@@ -305,7 +389,7 @@ class EditorCanvas(tk.Canvas):
             self.on_model_changed()
             return
 
-        if tool == Tool.AP:
+        if self.session.tool == Tool.AP:
             self.session.add_access_point(world)
             self.session.set_tool(Tool.SELECT)
             self.render_project()

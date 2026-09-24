@@ -188,6 +188,44 @@ Implementación: `engine.obstacles.wall_attenuation_db`,
 
 ---
 
+## 10. Heatmap de cobertura (Fase 4) — estimación, no EM
+
+**Disclaimer:** el heatmap es una **estimación predictiva** del modelo
+configurado (FSPL + presupuesto de enlace + atenuación de materiales
+configurables). **NO** es una simulación electromagnética completa ni
+sustituye mediciones en sitio.
+
+### Muestreo (`engine.coverage_grid.CoverageGrid`)
+
+- Puntos en múltiplos de `resolution_m` desde `(0,0)`, más un punto de
+  borde si la dimensión no es múltiplo exacto (decisión L).
+- Límites V1: `resolution_m ≥ 0.05 m`, `point_count ≤ 100_000`.
+- Ejemplo: 12 × 8 m @ 0.50 m → 25 × 17 = **425** puntos.
+
+### Flujo por punto del grid
+
+Misma cadena canónica que las secciones 1–8, sin fórmulas nuevas:
+
+```
+para cada punto p en CoverageGrid.points():
+    L_obstacles = Σ L_wall   (trace_walls AP → p, decisión K)
+    P_rx = link_budget(..., L_obstacles)
+    SOM  = P_rx − sensibilidad
+    calidad = classify_quality(P_rx, umbrales)
+```
+
+- **Un solo AP** por heatmap (decisión M).
+- `%` de cobertura: denominador = **todos los puntos del grid**
+  (decisión P).
+- Si un punto del grid cae **sobre el AP** (`d = 0`), `evaluate_link`
+  usa un piso `MIN_FSPL_DISTANCE_M = 0.1 m` solo para FSPL
+  (decisión T); la fórmula FSPL no se modifica.
+- Visualización: color continuo de `P_rx` en `ui/coverage_renderer`
+  (solo presentación; no altera umbrales RF).
+- Invalidación + debounce al editar modelo (decisión O).
+
+---
+
 ## 9. Ejemplo del DOCX (validación)
 
 Distancia 10 m, 5 GHz (5180 MHz), con `L_m = 10 dB`:

@@ -86,21 +86,36 @@ class PropertiesPanel(ttk.Frame):
         )
         pos_box.columnconfigure(1, weight=1)
 
-        # --- Simulación ---
-        sim_box = ttk.LabelFrame(self, text="Simulación", padding=8)
+        # --- Simulación + Heatmap ---
+        sim_box = ttk.LabelFrame(self, text="Simulación / Heatmap", padding=8)
         sim_box.pack(fill="both", expand=True, padx=8, pady=(4, 8))
 
         ttk.Button(sim_box, text="Ejecutar simulación", command=self._on_simulate).pack(
             fill="x", pady=(0, 6)
         )
         self._sim_text = tk.Text(
-            sim_box, height=8, wrap="word", state="disabled",
+            sim_box, height=6, wrap="word", state="disabled",
             bg="#12121c", fg="#98c379", relief="flat", font=("Consolas", 9),
         )
-        self._sim_text.pack(fill="both", expand=True)
+        self._sim_text.pack(fill="x")
+
+        ttk.Label(sim_box, text="Heatmap (grid):").pack(anchor="w", pady=(8, 2))
+        self._heat_text = tk.Text(
+            sim_box, height=12, wrap="word", state="disabled",
+            bg="#12121c", fg="#4f9cf9", relief="flat", font=("Consolas", 9),
+        )
+        self._heat_text.pack(fill="both", expand=True)
 
         self._refresh_materials()
         self.refresh()
+
+    def show_heatmap_text(self, text: str) -> None:
+        self._set_text(self._heat_text, text)
+
+    def append_heatmap_text(self, text: str) -> None:
+        self._heat_text.configure(state="normal")
+        self._heat_text.insert("end", text)
+        self._heat_text.configure(state="disabled")
 
     def _refresh_materials(self) -> None:
         materials = self._session.project.materials
@@ -183,6 +198,8 @@ class PropertiesPanel(ttk.Frame):
 
         if session.last_simulation is not None or session.last_simulation_error:
             self._set_text(self._sim_text, session.simulation_summary_text())
+        if session.last_heatmap is not None or session.last_heatmap_error:
+            self._set_text(self._heat_text, session.heatmap_stats_text())
 
     def show_simulation_text(self, text: str) -> None:
         self._set_text(self._sim_text, text)

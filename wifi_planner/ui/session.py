@@ -18,6 +18,7 @@ from core.project import Project
 from core.result import SimulationResult
 from core.space import Floor
 from core.wall import Wall
+from engine.coverage_grid import CoverageGrid
 from engine.simulator import simulate_coverage
 
 
@@ -93,6 +94,12 @@ class EditorSession:
         self.band_id: str = "band_2_4"
         self.last_simulation: SimulationResult | None = None
         self.last_simulation_error: str | None = None
+        # Fase 4: heatmap espacial
+        self.grid_resolution_m: float = 0.5
+        self.heatmap_enabled: bool = True
+        self.last_heatmap: SimulationResult | None = None
+        self.last_heatmap_error: str | None = None
+        self.heatmap_dirty: bool = True
 
     # ------------------------------------------------------------------
     # Piso / dimensiones
@@ -117,6 +124,126 @@ class EditorSession:
     def set_floor_dimensions(self, width_m: float, height_m: float) -> None:
         """Valida y aplica nuevas dimensiones del espacio (metros)."""
         self.floor.set_dimensions(width_m, height_m)
+        self.invalidate_heatmap()
+
+    def set_grid_resolution(self, resolution_m: float) -> None:
+        """Resolución del CoverageGrid en metros (> 0, con límite mínimo)."""
+        resolution = float(resolution_m)
+        if resolution <= 0:
+            raise ValueError(f"Resolución debe ser > 0 (got {resolution}).")
+        # La validación completa (mín. / máx. puntos) ocurre al construir el grid.
+        probe = CoverageGrid(
+            width_m=self.floor_width_m,
+            height_m=self.floor_height_m,
+            resolution_m=resolution,
+        )
+        if probe.point_count <= 0:
+            raise ValueError("Grid vacío con esa resolución.")
+        self.grid_resolution_m = resolution
+        self.invalidate_heatmap()
+
+    def set_band(self, band_id: str) -> None:
+        """Cambia la banda activa y invalida el heatmap (no reutiliza 2.4→5)."""
+        self.project.get_band(band_id)  # valida existencia
+        if band_id != self.band_id:
+            self.band_id = band_id
+            self.invalidate_heatmap()
+
+    def set_heatmap_enabled(self, enabled: bool) -> None:
+        self.heatmap_enabled = bool(enabled)
+        if enabled:
+            self.invalidate_heatmap()
+
+    def invalidate_heatmap(self) -> None:
+        """Marca el heatmap como no válido (no sirve el resultado anterior)."""
+        self.heatmap_dirty = True
+
+    def build_coverage_grid(self) -> CoverageGrid:
+        """Grid espacial del piso con la resolución actual (metros)."""
+        return CoverageGrid(
+            width_m=self.floor_width_m,
+            height_m=self.floor_height_m,
+            resolution_m=self.grid_resolution_m,
+        )
+
+    def resolve_ap_for_heatmap(self) -> AccessPoint | None:
+        """AP seleccionado o el primero del proyecto (comportamiento Fase 3/4)."""
+        ap = self.selected_ap()
+        if ap is None and self.project.access_points:
+            return self.project.access_points[0]
+        return ap
+
+    def run_heatmap(self, band_id: str | None = None) -> SimulationResult:
+        """Simula el CoverageGrid completo con las paredes reales.
+
+        Un solo AP (seleccionado o el primero). No combina múltiples APs.
+
+        Raises:
+            ValueError: si no hay AP o el grid es inválido.
+            MaterialAttenuationError: banda sin datos (p. ej. 6 GHz).
+        """
+        band_id = band_id or self.band_id
+        self.band_id = band_id
+        self.last_heatmap_error = None
+
+        ap = self.resolve_ap_for_heatmap()
+        if ap is None:
+            raise ValueError("Coloca al menos un Access Point para el heatmap.")
+
+        band = self.project.get_band(band_id)
+        grid = self.build_coverage_grid()
+        result = simulate_coverage(
+            project=self.project,
+            access_point=ap,
+            frequency_band=band,
+            sample_points=grid.points(),
+            walls=self.floor.walls,
+        )
+        self.last_heatmap = result
+        self.heatmap_dirty = False
+        return result
+
+    def heatmap_stats_text(self) -> str:
+        """Estadísticas del último heatmap (denominador: puntos del grid)."""
+        if self.last_heatmap_error:
+            return self.last_heatmap_error
+        if self.last_heatmap is None:
+            return "Sin heatmap todavía."
+        from ui.coverage_renderer import stats_text
+
+        band = self.project.get_band(self.last_heatmap.band_id)
+        ap = self.resolve_ap_for_heatmap()
+        header = (
+            f"AP: {ap.id if ap else '—'}\n"
+            f"Banda: {band.name}\n"
+            f"Resolución: {self.grid_resolution_m:g} m\n\n"
+        )
+        return header + stats_text(self.last_heatmap)
+
+    def client_rssi_lines(self) -> list[str]:
+        """RSSI/SOM en posiciones de clientes (si hay heatmap y clientes)."""
+        if not self.last_heatmap or not self.project.clients:
+            return []
+        lines: list[str] = []
+        for client in self.project.clients:
+            ev = self.last_heatmap.best_at(client.position)
+            if ev is None:
+                # Buscar por proximidad mínima (redondeo de grid)
+                best = None
+                best_d = float("inf")
+                for e in self.last_heatmap.evaluations:
+                    d = e.point.distance_to(client.position)
+                    if d < best_d:
+                        best_d = d
+                        best = e
+                ev = best
+            if ev is None:
+                continue
+            lines.append(
+                f"{client.id}: RSSI {ev.rx_power_dbm:.1f} dBm | "
+                f"SOM {ev.som_db:.1f} | {ev.quality.value}"
+            )
+        return lines
 
     # ------------------------------------------------------------------
     # Selección / herramienta
@@ -178,6 +305,7 @@ class EditorSession:
         )
         self.floor.walls.append(wall)
         self.select(SelectionKind.WALL, wall_id)
+        self.invalidate_heatmap()
         return wall
 
     def add_access_point(self, position: Point2D) -> AccessPoint:
@@ -187,6 +315,7 @@ class EditorSession:
         ap = AccessPoint(id=ap_id, position=position, radio=self.project.radio)
         self.project.access_points.append(ap)
         self.select(SelectionKind.AP, ap_id)
+        self.invalidate_heatmap()
         return ap
 
     def add_client(self, position: Point2D) -> ClientDevice:
@@ -214,6 +343,7 @@ class EditorSession:
         for index, ap in enumerate(self.project.access_points):
             if ap.id == ap_id:
                 self.project.access_points[index] = replace(ap, position=position)
+                self.invalidate_heatmap()
                 return
         raise KeyError(f"Access Point no encontrado: {ap_id}")
 
@@ -232,6 +362,7 @@ class EditorSession:
         for index, wall in enumerate(self.floor.walls):
             if wall.id == wall_id:
                 self.floor.walls[index] = replace(wall, material=material)
+                self.invalidate_heatmap()
                 return
         raise KeyError(f"Pared no encontrada: {wall_id}")
 
@@ -246,6 +377,7 @@ class EditorSession:
         for index, wall in enumerate(self.floor.walls):
             if wall.id == wall_id:
                 self.floor.walls[index] = replace(wall, thickness_m=float(thickness_m))
+                self.invalidate_heatmap()
                 return
         raise KeyError(f"Pared no encontrada: {wall_id}")
 
@@ -264,18 +396,21 @@ class EditorSession:
                 if wall.id == entity_id:
                     del self.floor.walls[index]
                     self.selection = None
+                    self.invalidate_heatmap()
                     return True
         elif kind == SelectionKind.AP:
             for index, ap in enumerate(self.project.access_points):
                 if ap.id == entity_id:
                     del self.project.access_points[index]
                     self.selection = None
+                    self.invalidate_heatmap()
                     return True
         elif kind == SelectionKind.CLIENT:
             for index, client in enumerate(self.project.clients):
                 if client.id == entity_id:
                     del self.project.clients[index]
                     self.selection = None
+                    self.invalidate_heatmap()
                     return True
         self.selection = None
         return False

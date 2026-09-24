@@ -25,6 +25,11 @@ from core.radio import RadioConfiguration
 from core.result import LinkEvaluation, ObstacleLoss, QualityClass, Verdict
 from engine import classifier, propagation
 
+# Piso numérico cuando el receptor coincide con el AP (d = 0).
+# FSPL exige d > 0 (log10 indefinido en 0). No es física: es un límite
+# de ingeniería para el heatmap (decisión T en docs/decisions.md).
+MIN_FSPL_DISTANCE_M = 0.1
+
 
 @dataclass(frozen=True)
 class LinkBudget:
@@ -133,10 +138,13 @@ def evaluate_link(
         obstacle_loss = ObstacleLoss(total_db=0.0, crossings=0)
 
     distance = ap_position.distance_to(client_position)
+    # Punto exactamente sobre el AP: FSPL con d = 0 no está definido.
+    # Usamos un piso de ingeniería (no cambia la fórmula FSPL).
+    fspl_distance = distance if distance > 0 else MIN_FSPL_DISTANCE_M
 
     budget = link_budget(
         radio=radio,
-        distance_m=distance,
+        distance_m=fspl_distance,
         frequency_mhz=frequency_mhz,
         obstacle_loss_db=obstacle_loss.total_db,
     )
