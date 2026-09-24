@@ -1,22 +1,27 @@
 """Simulador de cobertura.
 
-Fase 1: simulación de un punto (AP → punto evaluado).
-La simulación sobre cuadrícula (grid/heatmap) llega en Fase 4,
-pero este módulo ya expone la interfaz que consumirá la UI:
+Fase 2: el simulador integra el trazado de paredes real (AP → punto →
+materiales) para calcular L_obstacles antes del link budget.
 
-    simulate_coverage(project, access_point, frequency_band) -> SimulationResult
+Flujo por punto:
 
+    distancia → FSPL → trace_walls (L_obstacles) → link_budget
+        → P_rx / SOM → clasificación
+
+La simulación sobre cuadrícula (grid/heatmap) llega en Fase 4.
 La UI NUNCA ejecuta fórmulas; solo llama a este módulo y pinta resultados.
 """
 
 from __future__ import annotations
 
 import time
+from typing import Sequence
 
 from core.geometry import Point2D
 from core.result import LinkEvaluation, ObstacleLoss, SimulationResult
+from core.wall import Wall
 from engine.link_budget import evaluate_link
-from engine.obstacles import obstacle_loss_for_crossings
+from engine.obstacles import obstacle_loss_for_crossings, trace_to_obstacle_loss, trace_walls
 
 
 def simulate_coverage(
@@ -26,6 +31,7 @@ def simulate_coverage(
     sample_points: list[Point2D] | None = None,
     obstacle_materials_by_point: dict[Point2D, list] | None = None,
     client: object | None = None,
+    walls: Sequence[Wall] | None = None,
 ) -> SimulationResult:
     """Simula la cobertura de un AP sobre uno o varios puntos.
 
@@ -34,19 +40,24 @@ def simulate_coverage(
         access_point: AccessPoint a evaluar.
         frequency_band: FrequencyBand (2.4/5/6 GHz).
         sample_points: Puntos a evaluar en metros. Si es None y no hay
-            client, se evalúa el propio centro del AP no es válido
-            (distancia 0) => se requiere al menos un sample point o client.
-        obstacle_material_by_point: {punto: [materiales atravesados]}.
-            En Fase 1 la geometría real de paredes aún no se traza;
-            esta estructura permite pruebas y llegará completa en Fase 2.
+            client, se requiere al menos un sample point o client.
+        obstacle_materials_by_point: {punto: [materiales atravesados]}.
+            Ruta de Fase 1 (materials explícitos, sin geometría). Se usa
+            solo si ``walls`` es None.
         client: ClientDevice opcional; su posición se añade a la evaluación
             y su sensibilidad sustituye a la del AP si se indica.
+        walls: Paredes del plano en metros (Fase 2). Si se indican, el
+            L_obstacles de cada punto se obtiene con ``trace_walls``
+            (intersección real AP → punto). Tiene prioridad sobre
+            ``obstacle_materials_by_point``.
 
     Returns:
         SimulationResult con una LinkEvaluation por punto evaluado.
 
     Raises:
         ValueError: si no hay puntos que evaluar.
+        MaterialAttenuationError: si una pared cruzada no tiene datos
+            de atenuación para la banda (p. ej. 6 GHz).
     """
     if sample_points is None and client is None:
         raise ValueError(
@@ -63,14 +74,26 @@ def simulate_coverage(
     if obstacle_materials_by_point is None:
         obstacle_materials_by_point = {}
 
+    walls_list: list[Wall] = list(walls) if walls is not None else []
+    use_geometry = walls is not None
+
     evaluations: list[LinkEvaluation] = []
 
     for point in points:
-        materials = obstacle_materials_by_point.get(point, [])
-        obstacle = obstacle_loss_for_crossings(
-            materials=materials,
-            band_id=frequency_band.id,
-        )
+        if use_geometry:
+            trace = trace_walls(
+                source=access_point.position,
+                target=point,
+                walls=walls_list,
+                band_id=frequency_band.id,
+            )
+            obstacle = trace_to_obstacle_loss(trace)
+        else:
+            materials = obstacle_materials_by_point.get(point, [])
+            obstacle = obstacle_loss_for_crossings(
+                materials=materials,
+                band_id=frequency_band.id,
+            )
 
         # Sensibilidad: la del cliente si se usa un client, si no la del radio.
         radio = access_point.radio

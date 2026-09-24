@@ -10,8 +10,8 @@ Donde:
 - L_m (fade margin) es configurable; por defecto 10 dB (decisión B).
   Usar 0 dB para reproducir el comportamiento de las versiones legacy
   v3/v4 que omitían el margen.
-- L_obstacles es 0 en Fase 1 (aún no hay intersección rayo-pared);
-  la estructura ya lo contempla para Fase 2.
+- L_obstacles proviene del trazado de paredes (Fase 2: trace_walls)
+  o es 0.0 si no hay obstáculos / no se pasa obstacle_loss.
 
 Ninguna fórmula vive en la UI.
 """
@@ -122,7 +122,8 @@ def evaluate_link(
         client_position: Posición del cliente/punto en metros.
         frequency_mhz: Frecuencia de la banda en MHz.
         thresholds: Umbrales de clasificación (CoverageThresholds).
-        obstacle_loss: Pérdida por obstáculos (None => 0 dB, Fase 1).
+        obstacle_loss: Pérdida por obstáculos (None => 0 dB). En Fase 2
+            lo aporta engine.obstacles.trace_walls.
 
     Returns:
         LinkEvaluation con distancias, pérdidas, P_rx, SOM, veredicto

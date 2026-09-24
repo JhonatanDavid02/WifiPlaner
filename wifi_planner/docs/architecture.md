@@ -69,7 +69,8 @@ devuelven resultados. **La UI solo consume estos resultados.**
 | `propagation.py` | Longitud de onda y FSPL |
 | `link_budget.py` | Presupuesto de enlace, SOM, `evaluate_link` |
 | `classifier.py` | Clasificación SOM / RSSI / calidad de cobertura |
-| `obstacles.py` | Pérdida acumulada por materiales atravesados |
+| `intersection.py` | Cruce trayecto ↔ segmento de pared (interior estricto) |
+| `obstacles.py` | `trace_walls`, atenuación por material/espesor, suma |
 | `simulator.py` | Simulación de cobertura (puntos; grid en Fase 4) |
 | `combine.py` | Combinación de resultados multi-AP (Fase 5) |
 
@@ -82,22 +83,44 @@ Pruebas deterministas con pytest. Incluyen golden data extraída del DOCX
 legacy (Tablas 2 y 3) para validar que el motor nuevo reproduce los
 resultados históricos aprobados.
 
-## Flujo de datos (futuro editor + heatmap)
+## Flujo de datos (editor + paredes + heatmap)
 
 ```
-UI (metros)                    engine                      UI (píxeles)
-┌──────────┐   Project, AP    ┌──────────────────┐   SimulationResult  ┌────────────┐
-│ Editor   │ ───────────────► │ simulate_coverage│ ─────────────────► │ Heatmap    │
-│ (canvas) │   band, puntos   │ (FSPL + Lm +     │   rx_power_dbm     │ (viewport) │
-└──────────┘                  │  obstáculos)     │   quality, verdict └────────────┘
-                              └──────────────────┘
+UI (metros)                    engine                              UI (píxeles)
+┌──────────┐   Project, AP    ┌────────────────────────────┐        ┌────────────┐
+│ Editor   │ ───────────────► │ 1. trace_walls(AP → punto) │        │ Heatmap    │
+│ (canvas) │   band, puntos   │    intersección + materiales│       │ (viewport) │
+│ + walls  │                  │ 2. L_obstacles             │   SimulationResult
+└──────────┘                  │ 3. FSPL + link budget      │ ─────► │ rx, quality│
+                              │ 4. SOM + clasificación     │        │ verdict    │
+                              └────────────────────────────┘        └────────────┘
 ```
 
-1. El editor construye un `Project` con geometría en **metros**.
-2. La UI llama a `engine.simulate_coverage(...)`.
-3. El motor devuelve `SimulationResult` con `LinkEvaluation` por punto.
-4. La UI convierte metros → píxeles y pinta el resultado.
-5. La UI **nunca** recalcula FSPL, SOM ni umbrales.
+1. El editor construye un `Project` con geometría en **metros** (paredes
+   como `Wall` con `Segment2D` + `Material` + espesor).
+2. La UI llama a `engine.simulate_coverage(..., walls=floor.walls)`.
+3. Por cada punto, `engine.obstacles.trace_walls(source, target, walls, band)`:
+   - `engine.intersection.segments_cross` decide qué paredes se atraviesan
+     (cruce interior estricto; extremos/esquinas no cuentan);
+   - `wall_attenuation_db` aplica `L_ref * (espesor / espesor_ref)`;
+   - devuelve `ObstacleTraceResult` ordenado por distancia desde el AP.
+4. El `ObstacleLoss` total entra al link budget canónico (`L_obstacles`).
+5. El motor devuelve `SimulationResult` con `LinkEvaluation` por punto.
+6. La UI convierte metros → píxeles y pinta el resultado.
+7. La UI **nunca** recalcula FSPL, SOM, intersecciones ni umbrales.
+
+### `trace_walls` (responsabilidad clave)
+
+```
+trace_walls(source, target, walls, band_id) -> ObstacleTraceResult
+```
+
+- Evalúa cada pared con `blocks_signal=True` contra el segmento
+  AP → punto.
+- Conserva **orden y detalle** por pared (`WallCrossing`: id, material,
+  pérdida, distancia, orden) — no solo un número.
+- Total: `attenuation_db = Σ loss_db` (redondeado a 2 decimales).
+- Determinista: empates de distancia se rompen por `wall.id`.
 
 ## Unidades
 
@@ -115,9 +138,12 @@ exclusivamente al futuro viewport.
 
 ## Preparación para fases posteriores
 
-- **Fase 2:** trazado rayo-pared en `engine/obstacles.py` (ya suma materiales).
+- **Fase 2 (hecha):** trazado rayo-pared (`intersection` + `trace_walls`)
+  e integración de `L_obstacles` real en `simulate_coverage`.
 - **Fase 3:** editor 2D consume `core/geometry` y `core/wall`.
 - **Fase 4:** grid de simulación + heatmap consumen `simulate_coverage`.
 - **Fase 5:** `combine_results` fusiona múltiples AP.
 - **Fase 6:** persistencia de `Project` (JSON/YAML).
 - **Futuro 3D:** `Floor.elevation_m` ya existe; geometría 2D no cambia.
+- **Openings / huecos:** `core.wall.Opening` existe; la atenuación
+  diferenciada de puertas/ventanas se conectará en fase posterior.

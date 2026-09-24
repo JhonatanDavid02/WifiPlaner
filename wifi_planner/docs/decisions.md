@@ -84,6 +84,81 @@ discrepancia se resolvió de forma silenciosa.
 - Los materiales V1 solo tienen atenuación para `band_2_4` y `band_5`.
   Consultar `band_6` en un material lanza `MaterialAttenuationError`.
 - Esto es intencional: no se inventan valores de atenuación para 6 GHz.
+- **Fase 2:** `wall_attenuation_db` y `trace_walls` propagan esa
+  excepción de forma explícita; no hay fallback 5 → 6 GHz.
+
+---
+
+## Decisiones Fase 2 (geometría y paredes)
+
+### Decisión E — EPSILON geométrico centralizado
+
+- **Decisión:** `EPSILON_GEOMETRY = 1e-9` en `core/geometry.py`.
+- **Razón:** única tolerancia para intersecciones; evita comparaciones
+  exactas de float. Parámetros `t`/`u` normalizados en [0, 1] usan la
+  misma epsilon (1e-9 ≈ milímetros de margen en escalas de edificio
+  se tratan como "en el extremo").
+- `engine/intersection.py` la importa; no se redefine en otro módulo.
+
+### Decisión F — Cruce interior estricto (extremos no cuentan)
+
+- **Decisión:** solo cuenta la intersección si
+  `ε < t < 1−ε` **y** `ε < u < 1−ε` (parámetros de trayecto y pared).
+- **Razón:**
+  - Tocar un extremo de la pared no debe provocar doble conteo en
+    esquinas compartidas (dos paredes, un mismo punto).
+  - AP o punto exactamente sobre una pared no "cruza" esa pared
+    (t = 0 o t = 1).
+- **Comportamiento en esquina:** un trayecto que pasa exactamente por
+  la esquina compartida de una L cuenta **0** paredes (ambas tocan
+  extremo). Un trayecto que cruza el interior de ambas cuenta **2**.
+
+### Decisión G — Paralelos y colineales no cuentan
+
+- **Decisión:** `|path × wall| ≤ ε` ⇒ paralelo o colineales ⇒ sin cruce.
+- **Razón:** sin cruce propio único y determinista; una pared alineada
+  con el trayecto no se "atraviesa" de forma unívoca en el modelo de
+  segmentos de espesor cero.
+
+### Decisión H — Orden reproducible del trazado
+
+- **Decisión:** paredes cruzadas se ordenan por
+  `(distancia_desde_origen, wall.id)`.
+- **Razón:** el detalle y el total deben ser reproducibles ante empates
+  (p. ej. dos paredes en el mismo punto de cruce).
+
+### Decisión I — Escalado lineal de espesor
+
+- **Decisión:**
+  `L = L_ref(banda) × (espesor_actual / espesor_referencia)`
+- **Razón:** modelo sencillo, configurable y coherente con el catálogo
+  de Fase 1 (`thickness_default_m` + `attenuation_db`).
+  Si `thickness_m = None`, la pared usa el espesor de referencia
+  (`L = L_ref`); la mayoría de paredes "de catálogo" no cambian.
+- **Advertencia:** aproximación de ingeniería para predicción V1,
+  **NO** simulación electromagnética. No se afirma relación lineal
+  física universal (p. ej. no se asume "10 cm = 10 dB" salvo que el
+  dato de referencia lo diga).
+- Validaciones: espesor actual > 0, espesor ref > 0, material con
+  datos para la banda.
+
+### Decisión J — Comportamiento 6 GHz sin datos
+
+- **Decisión:** `MaterialAttenuationError` explícita (misma excepción
+  de Fase 1) al consultar `wall_attenuation_db` / `trace_walls` /
+  `simulate_coverage(walls=...)` con `band_6`.
+- **Razón:** no inventar atenuaciones; no convertir silenciosamente
+  5 GHz → 6 GHz. El llamador decide si habilita datos de 6 GHz.
+
+### Decisión K — Prioridad de fuentes de obstáculos en el simulador
+
+- **Decisión:** si `simulate_coverage(..., walls=[...])` recibe paredes,
+  el `L_obstacles` sale de `trace_walls` (geometría real). El mapa
+  legado `obstacle_materials_by_point` (Fase 1) solo se usa si
+  `walls is None`.
+- **Razón:** la fuente de verdad en Fase 2+ es la geometría; la ruta
+  de materiales explícitos se mantiene por compatibilidad con los
+  tests y usos de Fase 1.
 
 ---
 

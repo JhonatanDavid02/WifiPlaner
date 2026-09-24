@@ -9,6 +9,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 
+# Tolerancia geométrica centralizada (metros / parámetros normalizados).
+# Evita comparaciones exactas de float en intersecciones rayo ↔ pared.
+# Usada por engine/intersection.py. Documentada en docs/decisions.md.
+EPSILON_GEOMETRY = 1e-9
+
 
 @dataclass(frozen=True)
 class Point2D:

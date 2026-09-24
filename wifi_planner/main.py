@@ -1,7 +1,8 @@
-"""Punto de entrada de Wi-Fi Planner V1 (fundación).
+"""Punto de entrada de Wi-Fi Planner V1.
 
-Fase 1: solo verifica que dominio, motor y configuración cargan
-correctamente. NO incluye interfaz gráfica.
+Fase 1: fundación (dominio, motor RF, configuración).
+Fase 2: geometría de paredes + atenuación integrada al link budget.
+NO incluye interfaz gráfica.
 
 Uso:
     python main.py
@@ -17,14 +18,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from config import load_config
 from core.band import FrequencyBand
-from core.geometry import Point2D
+from core.geometry import Point2D, Segment2D
 from core.project import Project
-from engine import evaluate_link, wavelength_m
+from core.wall import Wall
+from engine import evaluate_link, wavelength_m, trace_walls
+from engine.simulator import simulate_coverage
+from core.access_point import AccessPoint
 
 
 def main() -> int:
     print("=" * 70)
-    print("WI-FI PLANNER V1 - FASE 1 (FUNDACION)")
+    print("WI-FI PLANNER V1 - FASE 2 (GEOMETRIA RF + PAREDES)")
     print("=" * 70)
 
     cfg = load_config()
@@ -79,7 +83,56 @@ def main() -> int:
             f"Calidad={evaluation.quality.value}"
         )
 
-    print("\nFase 1 OK. Motor RF centralizado y sin UI.")
+    # --- Fase 2: pared real en el trayecto AP (0,0) -> punto (10,0) ---
+    drywall = project.get_material("drywall")
+    concrete = project.get_material("concrete")
+    wall_drywall = Wall(
+        id="W_DRYWALL",
+        segment=Segment2D(Point2D(5.0, -5.0), Point2D(5.0, 5.0)),
+        material=drywall,
+    )
+    wall_concrete = Wall(
+        id="W_CONCRETE",
+        segment=Segment2D(Point2D(7.0, -5.0), Point2D(7.0, 5.0)),
+        material=concrete,
+    )
+    walls = [wall_drywall, wall_concrete]
+    point = Point2D(10.0, 0.0)
+
+    print("\n-- Fase 2: trazado de paredes (AP (0,0) -> (10,0)) --")
+    for band in (band_24, band_5):
+        trace = trace_walls(ap_pos, point, walls, band.id)
+        print(
+            f"  {band.name}: {trace.crossings_count} pared(es) | "
+            f"L_obstacles={trace.attenuation_db} dB | "
+            f"orden={list(trace.wall_ids)}"
+        )
+        for crossing in trace.walls_crossed:
+            print(
+                f"    [{crossing.order}] {crossing.wall.id} "
+                f"({crossing.material_id}) @ "
+                f"{crossing.distance_from_source_m} m -> "
+                f"{crossing.loss_db} dB"
+            )
+
+    print("\n-- Integracion en simulate_coverage (una pared drywall) --")
+    ap = AccessPoint(id="AP_DEMO", position=ap_pos, radio=project.radio)
+    result = simulate_coverage(
+        project=project,
+        access_point=ap,
+        frequency_band=band_24,
+        sample_points=[point],
+        walls=[wall_drywall],
+    )
+    ev = result.evaluations[0]
+    print(
+        f"  2.4 GHz: FSPL={ev.path_loss_db} dB | "
+        f"L_obstacles={ev.obstacle_loss_db} dB | "
+        f"P_rx={ev.rx_power_dbm} dBm | SOM={ev.som_db} dB | "
+        f"{ev.verdict.value}"
+    )
+
+    print("\nFase 2 OK. Geometria de paredes integrada al motor RF. Sin UI.")
     return 0
 
 

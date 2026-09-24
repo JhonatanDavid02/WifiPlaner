@@ -56,14 +56,14 @@ P_rx = P_tx + G_tx − L_tx − FSPL − L_m + G_rx − L_rx − L_obstacles
 | `L_m` | Fade margin (margen de desvanecimiento) | dB | **10.0** |
 | `G_rx` | Ganancia antena RX | dBi | 0.0 |
 | `L_rx` | Pérdidas RX | dB | 1.0 |
-| `L_obstacles` | Pérdida por materiales atravesados | dB | 0.0 (Fase 1) |
+| `L_obstacles` | Pérdida por materiales atravesados | dB | 0.0 (sin paredes) |
 
 Notas:
 - `L_m = 10 dB` por defecto (**decisión B**). Es configurable.
 - Para reproducir las versiones legacy v3/v4 (que omitían `L_m`),
   usar `fade_margin_db = 0.0`.
-- `L_obstacles = 0` en Fase 1; la estructura ya lo contempla y se
-  conecta con la geometría de paredes en Fase 2.
+- `L_obstacles` proviene de `trace_walls` cuando se pasan paredes
+  (Fase 2); es `0.0` si no hay obstáculos.
 
 Implementación: `engine.link_budget.link_budget(...)`
 
@@ -129,29 +129,62 @@ Implementación: `engine.classifier.classify_quality(rx_power_dbm, thresholds)`
 
 ---
 
-## 8. Pérdida por obstáculos (estructura V1)
+## 8. Pérdida por obstáculos (paredes reales)
 
 ```
-L_obstacles = Σ atenuación(material_i, banda)
+L_total_obstacles = Σ L_wall_i          (por cada pared atravesada)
+
+L_wall = L_referencia(material, banda) × (espesor_actual / espesor_referencia)
 ```
 
-- Cada pared atravesada aporta la atenuación de su material para la banda.
-- En Fase 1 la intersección rayo-pared aún no está implementada;
-  `L_obstacles` se pasa como parámetro (defecto `0.0`).
-- La suma de materiales ya es funcional: `engine.obstacles.obstacle_loss_for_crossings`.
+### Trazado (Fase 2)
+
+Para cada par (AP → punto):
+
+1. Se construye el segmento `path = Segment2D(AP, punto)`.
+2. Cada `Wall` con `blocks_signal=True` se evalúa con
+   `engine.intersection.segments_cross` (cruce interior estricto).
+3. Las paredes cruzadas se ordenan por distancia desde el AP.
+4. Cada crice aporta `L_wall` con el modelo de espesor.
+5. El total entra al link budget como `L_obstacles`.
+
+### Modelo de espesor (aproximación de ingeniería)
+
+```
+L_wall = L_ref × (t_actual / t_ref)
+```
+
+- `t_ref = material.thickness_default_m` (espesor de referencia).
+- `L_ref = material.attenuation_db[band_id]` (atenuación de referencia).
+- Si `t_actual = t_ref` → `L_wall = L_ref` (sin cambio).
+- Si `thickness_m = None` en la pared → se usa `t_ref` (`L = L_ref`).
+- Validaciones: `t_actual > 0`, `t_ref > 0`, material con datos para la banda.
+
+**Advertencia:** el escalado lineal es una **aproximación de ingeniería**
+para el modelo predictivo V1. **NO** es una simulación electromagnética
+ni una curva de atenuación medida por capas.
 
 Valores de referencia de materiales (estimaciones configurables,
 ver `config/default_config.yaml` y `docs/decisions.md`):
 
-| Material | 2.4 GHz | 5 GHz |
-|---|---:|---:|
-| Drywall | 3 dB | 4 dB |
-| Madera | 3 dB | 4 dB |
-| Vidrio | 3 dB | 4 dB |
-| Ladrillo | 6 dB | 8 dB |
-| Concreto | 12 dB | 15 dB |
-| Concreto reforzado | 15 dB | 20 dB |
-| Metal | 25 dB | 30 dB |
+| Material | 2.4 GHz | 5 GHz | Espesor ref. |
+|---|---:|---:|---:|
+| Drywall | 3 dB | 4 dB | 12 mm |
+| Madera | 3 dB | 4 dB | 40 mm |
+| Vidrio | 3 dB | 4 dB | 8 mm |
+| Ladrillo | 6 dB | 8 dB | 120 mm |
+| Concreto | 12 dB | 15 dB | 150 mm |
+| Concreto reforzado | 15 dB | 20 dB | 200 mm |
+| Metal | 25 dB | 30 dB | 5 mm |
+
+### 6 GHz
+
+No hay `L_ref` configurada para `band_6` en el catálogo V1.
+Consultar atenuación lanza `MaterialAttenuationError`. No se inventan
+valores ni se convierte silenciosamente 5 → 6 GHz.
+
+Implementación: `engine.obstacles.wall_attenuation_db`,
+`engine.obstacles.trace_walls`.
 
 ---
 
