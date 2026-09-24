@@ -20,7 +20,7 @@ Formato (``schema_version = 1``)::
       "editor": {"band_id": "band_2_4", "grid_resolution_m": 0.5}
     }
 
-Decisiones de formato (docs/decisions.md, Fase 6):
+Decisiones de formato (docs/decisions.md, Fase 6 + 7):
 
 - Coordenadas SIEMPRE en metros (``x_m`` / ``y_m``); los píxeles no
   existen aquí (la conversión es responsabilidad del ``Viewport``).
@@ -30,6 +30,11 @@ Decisiones de formato (docs/decisions.md, Fase 6):
   se regeneran al abrir.
 - ``schema_version`` incompatible => ``ProjectFormatError`` controlado
   (nunca carga parcial ni sobrescribe el proyecto en memoria).
+- Fase 7 (misma versión 1, claves **opcionales**): ``radio`` puede
+  traer ``noise_floor_dbm``, ``channel_width_mhz`` y ``wifi_standard``;
+  ``thresholds`` puede traer ``snr_target_db``. Si faltan (archivos F6)
+  se aplican los defaults centralizados de ``core/`` (decisión AZ):
+  ningún proyecto F6 deja de abrirse.
 """
 
 from __future__ import annotations
@@ -46,8 +51,19 @@ from core.band import FrequencyBand
 from core.client import ClientDevice
 from core.geometry import Point2D, Segment2D
 from core.material import Material
-from core.project import CoverageThresholds, Project
-from core.radio import RadioConfiguration
+from core.project import (
+    SNR_TARGET_MAX_DB,
+    SNR_TARGET_MIN_DB,
+    CoverageThresholds,
+    Project,
+)
+from core.radio import (
+    CHANNEL_WIDTHS_MHZ,
+    NOISE_FLOOR_MAX_DBM,
+    NOISE_FLOOR_MIN_DBM,
+    WIFI_STANDARDS,
+    RadioConfiguration,
+)
 from core.space import Floor
 from core.wall import Wall
 
@@ -244,6 +260,10 @@ def _radio_to_dict(radio: RadioConfiguration) -> dict[str, float]:
         "l_rx_db": radio.l_rx_db,
         "sensitivity_dbm": radio.sensitivity_dbm,
         "fade_margin_db": radio.fade_margin_db,
+        # Fase 7 (claves opcionales al LEER; siempre se escriben):
+        "noise_floor_dbm": radio.noise_floor_dbm,
+        "channel_width_mhz": int(radio.channel_width_mhz),
+        "wifi_standard": radio.wifi_standard,
     }
 
 
@@ -256,6 +276,8 @@ def _thresholds_to_dict(thresholds: CoverageThresholds) -> dict[str, float]:
         "good_min_dbm": thresholds.good_min_dbm,
         "regular_min_dbm": thresholds.regular_min_dbm,
         "weak_min_dbm": thresholds.weak_min_dbm,
+        # Fase 7 (clave opcional al LEER; siempre se escribe):
+        "snr_target_db": thresholds.snr_target_db,
     }
 
 
@@ -388,6 +410,45 @@ def _radio_from_dict(value: Any, path: str) -> RadioConfiguration:
         )
     if kwargs["fade_margin_db"] < 0:
         _fail(f"{path}.fade_margin_db no puede ser negativo.")
+
+    # Fase 7: campos OPCIONALES (ausentes en archivos F6 => defaults
+    # centralizados desde la instancia por defecto, decisión AZ).
+    defaults = RadioConfiguration()
+    if "noise_floor_dbm" in data:
+        kwargs["noise_floor_dbm"] = _require_number(
+            data["noise_floor_dbm"],
+            f"{path}.noise_floor_dbm",
+            minimum=NOISE_FLOOR_MIN_DBM,
+            maximum=NOISE_FLOOR_MAX_DBM,
+        )
+    else:
+        kwargs["noise_floor_dbm"] = defaults.noise_floor_dbm
+
+    if "channel_width_mhz" in data:
+        width = _require_int(data["channel_width_mhz"], f"{path}.channel_width_mhz")
+        if width not in CHANNEL_WIDTHS_MHZ:
+            _fail(
+                f"{path}.channel_width_mhz: ancho no soportado {width} MHz "
+                f"(permitidos: {', '.join(str(w) for w in CHANNEL_WIDTHS_MHZ)})."
+            )
+        kwargs["channel_width_mhz"] = width
+    else:
+        kwargs["channel_width_mhz"] = defaults.channel_width_mhz
+
+    if "wifi_standard" in data:
+        standard = _require_str(
+            data["wifi_standard"], f"{path}.wifi_standard",
+            max_len=16, allow_empty=False,
+        )
+        if standard not in WIFI_STANDARDS:
+            _fail(
+                f"{path}.wifi_standard: estándar no soportado {standard!r} "
+                f"(permitidos: {', '.join(WIFI_STANDARDS)})."
+            )
+        kwargs["wifi_standard"] = standard
+    else:
+        kwargs["wifi_standard"] = defaults.wifi_standard
+
     return RadioConfiguration(**kwargs)
 
 
@@ -407,6 +468,18 @@ def _thresholds_from_dict(value: Any, path: str) -> CoverageThresholds:
         if field not in data:
             _fail(f"{path}.{field}: falta el campo obligatorio.")
         kwargs[field] = _require_number(data[field], f"{path}.{field}")
+
+    # Fase 7: campo OPCIONAL (ausente en archivos F6 => default centralizado).
+    if "snr_target_db" in data:
+        kwargs["snr_target_db"] = _require_number(
+            data["snr_target_db"],
+            f"{path}.snr_target_db",
+            minimum=SNR_TARGET_MIN_DB,
+            maximum=SNR_TARGET_MAX_DB,
+        )
+    else:
+        kwargs["snr_target_db"] = CoverageThresholds().snr_target_db
+
     return CoverageThresholds(**kwargs)
 
 

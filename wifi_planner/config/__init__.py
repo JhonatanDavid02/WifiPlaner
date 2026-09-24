@@ -44,26 +44,41 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
 
 
 def _parse_radio(data: dict) -> RadioConfiguration:
+    # Los defaults provienen de la instancia por defecto (fuente única
+    # en core/radio.py): no se repiten literales aquí (Paso 20 de F7).
+    defaults = RadioConfiguration()
     return RadioConfiguration(
-        p_tx_dbm=float(data.get("p_tx_dbm", 20.0)),
-        g_tx_dbi=float(data.get("g_tx_dbi", 3.0)),
-        l_tx_db=float(data.get("l_tx_db", 1.0)),
-        g_rx_dbi=float(data.get("g_rx_dbi", 0.0)),
-        l_rx_db=float(data.get("l_rx_db", 1.0)),
-        sensitivity_dbm=float(data.get("sensitivity_dbm", -75.0)),
-        fade_margin_db=float(data.get("fade_margin_db", 10.0)),
+        p_tx_dbm=float(data.get("p_tx_dbm", defaults.p_tx_dbm)),
+        g_tx_dbi=float(data.get("g_tx_dbi", defaults.g_tx_dbi)),
+        l_tx_db=float(data.get("l_tx_db", defaults.l_tx_db)),
+        g_rx_dbi=float(data.get("g_rx_dbi", defaults.g_rx_dbi)),
+        l_rx_db=float(data.get("l_rx_db", defaults.l_rx_db)),
+        sensitivity_dbm=float(data.get("sensitivity_dbm", defaults.sensitivity_dbm)),
+        fade_margin_db=float(data.get("fade_margin_db", defaults.fade_margin_db)),
+        noise_floor_dbm=float(data.get("noise_floor_dbm", defaults.noise_floor_dbm)),
+        channel_width_mhz=int(data.get("channel_width_mhz", defaults.channel_width_mhz)),
+        wifi_standard=str(data.get("wifi_standard", defaults.wifi_standard)),
     )
 
 
 def _parse_thresholds(data: dict) -> CoverageThresholds:
+    # Mismo criterio: defaults desde la instancia por defecto (core/).
+    defaults = CoverageThresholds()
     return CoverageThresholds(
-        rssi_target_dbm=float(data.get("rssi_target_dbm", -67.0)),
-        som_aprobado_min_db=float(data.get("som_aprobado_min_db", 20.0)),
-        som_riesgo_min_db=float(data.get("som_riesgo_min_db", 10.0)),
-        excellent_min_dbm=float(data.get("excellent_min_dbm", -50.0)),
-        good_min_dbm=float(data.get("good_min_dbm", -67.0)),
-        regular_min_dbm=float(data.get("regular_min_dbm", -75.0)),
-        weak_min_dbm=float(data.get("weak_min_dbm", -85.0)),
+        rssi_target_dbm=float(data.get("rssi_target_dbm", defaults.rssi_target_dbm)),
+        som_aprobado_min_db=float(
+            data.get("som_aprobado_min_db", defaults.som_aprobado_min_db)
+        ),
+        som_riesgo_min_db=float(
+            data.get("som_riesgo_min_db", defaults.som_riesgo_min_db)
+        ),
+        excellent_min_dbm=float(
+            data.get("excellent_min_dbm", defaults.excellent_min_dbm)
+        ),
+        good_min_dbm=float(data.get("good_min_dbm", defaults.good_min_dbm)),
+        regular_min_dbm=float(data.get("regular_min_dbm", defaults.regular_min_dbm)),
+        weak_min_dbm=float(data.get("weak_min_dbm", defaults.weak_min_dbm)),
+        snr_target_db=float(data.get("snr_target_db", defaults.snr_target_db)),
     )
 
 

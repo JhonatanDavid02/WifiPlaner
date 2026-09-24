@@ -136,8 +136,19 @@ class PropertiesPanel(ttk.Frame):
         selection = session.selection
 
         if selection is None:
-            self._set_text(self._info, "Ningún elemento seleccionado.\n\n"
-                            "Usa las herramientas para crear paredes, APs o clientes.")
+            radio = session.project.radio
+            thresholds = session.project.thresholds
+            self._set_text(
+                self._info,
+                "Ningún elemento seleccionado.\n\n"
+                "Usa las herramientas para crear paredes, APs o clientes.\n\n"
+                "Configuración RF (Config RF…):\n"
+                f"  Piso de ruido: {radio.noise_floor_dbm:g} dBm\n"
+                f"  Objetivo RSSI: > {thresholds.rssi_target_dbm:g} dBm\n"
+                f"  Objetivo SNR: ≥ {thresholds.snr_target_db:g} dB\n"
+                f"  Estándar: {radio.wifi_standard}\n"
+                f"  Ancho de canal: {radio.channel_width_mhz:g} MHz",
+            )
             self._material_combo.configure(state="disabled")
             self._thickness_entry.configure(state="disabled")
             self._x_var.set("")

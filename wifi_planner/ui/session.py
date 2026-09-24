@@ -15,9 +15,11 @@ from core.client import ClientDevice
 from core.geometry import Point2D, Segment2D
 from core.material import Material
 from core.project import Project
+from core.radio import wifi_generation
 from core.result import SimulationResult
 from core.space import Floor
 from core.wall import Wall
+from engine.classifier import rf_diagnostic
 from engine.combine import combine_results
 from engine.coverage_grid import CoverageGrid
 from engine.simulator import simulate_coverage
@@ -36,6 +38,26 @@ class Tool(str, Enum):
     WALL = "wall"
     AP = "ap"
     CLIENT = "client"
+
+
+class HeatmapMetric(str, Enum):
+    """Métrica visual del heatmap (Fase 7): RSSI o SNR.
+
+    Es una vista, no configuración del proyecto: no se persiste ni
+    marca ``dirty`` (decisión BA).
+    """
+
+    RSSI = "rssi"
+    SNR = "snr"
+
+
+def _standard_label(project: Project, frequency_mhz: float) -> str:
+    """Etiqueta del estándar del proyecto para una banda (Fase 7).
+
+    Ej.: ``802.11ax (Wi-Fi 6)`` o ``802.11ax (Wi-Fi 6E)`` a 6 GHz.
+    """
+    standard = project.radio.wifi_standard
+    return f"{standard} ({wifi_generation(standard, frequency_mhz)})"
 
 
 class SelectionKind(str, Enum):
@@ -106,6 +128,8 @@ class EditorSession:
         self.heatmap_enabled: bool = True
         # Fase 5: HEATMAP_ALL_APS (combinado) o id de un AP concreto.
         self.heatmap_ap_id: str = HEATMAP_ALL_APS
+        # Fase 7: métrica visual del heatmap (vista; no persistible).
+        self.heatmap_metric: str = HeatmapMetric.RSSI.value
         self.last_heatmap: SimulationResult | None = None
         self.last_heatmap_error: str | None = None
         self.heatmap_dirty: bool = True
@@ -191,6 +215,7 @@ class EditorSession:
         self.band_id = editor_state.band_id
         self.grid_resolution_m = editor_state.grid_resolution_m
         self.heatmap_ap_id = HEATMAP_ALL_APS
+        self.heatmap_metric = HeatmapMetric.RSSI.value
         self.heatmap_enabled = True
         self.last_simulation = None
         self.last_simulation_error = None
@@ -265,6 +290,46 @@ class EditorSession:
         self.invalidate_heatmap()
         self.mark_dirty()
 
+    def apply_rf_settings(
+        self,
+        *,
+        noise_floor_dbm: float,
+        snr_target_db: float,
+        rssi_target_dbm: float,
+        wifi_standard: str,
+        channel_width_mhz: int,
+    ) -> None:
+        """Configuración RF global (Fase 7): ruido, umbrales, estándar, ancho.
+
+        Atómico: radio y thresholds se construyen con ``replace`` ANTES de
+        tocar el proyecto; si la validación falla (``ValueError``), nada
+        cambia. Después se sincroniza la radio de los APs existentes
+        (F7 sin configuración por AP) y se invalida el heatmap.
+        """
+        radio = replace(
+            self.project.radio,
+            noise_floor_dbm=float(noise_floor_dbm),
+            channel_width_mhz=int(channel_width_mhz),
+            wifi_standard=str(wifi_standard),
+        )
+        thresholds = replace(
+            self.project.thresholds,
+            rssi_target_dbm=float(rssi_target_dbm),
+            snr_target_db=float(snr_target_db),
+        )
+        # Hasta aquí solo se validó: ahora la mutación es segura.
+        self.project.radio = radio
+        self.project.thresholds = thresholds
+        for ap in self.project.access_points:
+            ap.radio = replace(
+                ap.radio,
+                noise_floor_dbm=radio.noise_floor_dbm,
+                channel_width_mhz=radio.channel_width_mhz,
+                wifi_standard=radio.wifi_standard,
+            )
+        self.invalidate_heatmap()
+        self.mark_dirty()
+
     def set_band(self, band_id: str) -> None:
         """Cambia la banda activa y invalida el heatmap (no reutiliza 2.4→5)."""
         self.project.get_band(band_id)  # valida existencia
@@ -305,6 +370,20 @@ class EditorSession:
             new_id = ap_id
         if new_id != self.heatmap_ap_id:
             self.heatmap_ap_id = new_id
+            self.invalidate_heatmap()
+
+    def set_heatmap_metric(self, metric: str) -> None:
+        """Métrica visual del heatmap: ``rssi`` o ``snr`` (Fase 7).
+
+        Es una vista: invalida el heatmap (los píxeles a pintar cambian)
+        pero NO marca ``dirty`` ni se persiste (decisión BA).
+        """
+        if metric not in {m.value for m in HeatmapMetric}:
+            raise ValueError(
+                f"Métrica no soportada: {metric!r} (usa 'rssi' o 'snr')."
+            )
+        if metric != self.heatmap_metric:
+            self.heatmap_metric = metric
             self.invalidate_heatmap()
 
     def ap_choices_for_heatmap(self) -> list[str]:
@@ -398,8 +477,15 @@ class EditorSession:
         header = (
             f"AP: {ap_label}\n"
             f"Banda: {band.name}\n"
-            f"Resolución: {self.grid_resolution_m:g} m\n\n"
+            f"Resolución: {self.grid_resolution_m:g} m\n"
+            f"Estándar: {_standard_label(self.project, band.frequency_mhz)}\n"
         )
+        if self.heatmap_metric == HeatmapMetric.SNR.value:
+            header += (
+                f"Métrica: SNR (dB)\n"
+                f"SNR objetivo: {self.project.thresholds.snr_target_db:g} dB\n"
+            )
+        header += "\n"
         return header + stats_text(self.last_heatmap)
 
     def client_rssi_lines(self) -> list[str]:
@@ -421,9 +507,16 @@ class EditorSession:
                 ev = best
             if ev is None:
                 continue
+            diagnostic = rf_diagnostic(
+                ev.rx_power_dbm, ev.snr_db, self.project.thresholds
+            )
             lines.append(
-                f"{client.id}: RSSI {ev.rx_power_dbm:.1f} dBm | "
-                f"SOM {ev.som_db:.1f} | {ev.quality.value}"
+                f"{client.id}: AP {ev.access_point_id} | "
+                f"{ev.distance_m:.2f} m | "
+                f"RSSI {ev.rx_power_dbm:.1f} dBm | "
+                f"SOM {ev.som_db:.1f} | "
+                f"SNR {ev.snr_db:.1f} dB | {ev.quality.value} | "
+                f"{diagnostic}"
             )
         return lines
 
@@ -673,6 +766,7 @@ class EditorSession:
             return "Sin puntos simulados."
 
         rx_values = [e.rx_power_dbm for e in evaluations]
+        snr_values = [e.snr_db for e in evaluations]
         ap_id = evaluations[0].access_point_id
         band = self.project.get_band(result.band_id)
         wall_count = len(self.floor.walls)
@@ -682,5 +776,7 @@ class EditorSession:
             f"Paredes: {wall_count}\n"
             f"Puntos simulados: {len(evaluations)}\n"
             f"RSSI mínimo: {min(rx_values):.2f} dBm\n"
-            f"RSSI máximo: {max(rx_values):.2f} dBm"
+            f"RSSI máximo: {max(rx_values):.2f} dBm\n"
+            f"SNR mínimo: {min(snr_values):.2f} dB\n"
+            f"SNR máximo: {max(snr_values):.2f} dB"
         )

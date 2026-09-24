@@ -14,6 +14,7 @@ from engine.propagation import wavelength_m, path_loss_fspl_db
 from engine.link_budget import (
     link_budget,
     system_operating_margin,
+    signal_to_noise_ratio,
     evaluate_link,
 )
 from engine.intersection import (
@@ -31,7 +32,13 @@ from engine.obstacles import (
     WallCrossing,
     ObstacleTraceResult,
 )
-from engine.classifier import classify_quality, meets_rssi_target, classify_som
+from engine.classifier import (
+    classify_quality,
+    meets_rssi_target,
+    meets_snr_target,
+    rf_diagnostic,
+    classify_som,
+)
 from engine.coverage_grid import CoverageGrid, MAX_GRID_POINTS, MIN_RESOLUTION_M
 from engine.simulator import simulate_coverage
 from engine.combine import combine_results
@@ -41,6 +48,7 @@ __all__ = [
     "path_loss_fspl_db",
     "link_budget",
     "system_operating_margin",
+    "signal_to_noise_ratio",
     "evaluate_link",
     "segments_cross",
     "segment_crossing_parameters",
@@ -55,6 +63,8 @@ __all__ = [
     "ObstacleTraceResult",
     "classify_quality",
     "meets_rssi_target",
+    "meets_snr_target",
+    "rf_diagnostic",
     "classify_som",
     "CoverageGrid",
     "MAX_GRID_POINTS",

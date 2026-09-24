@@ -15,6 +15,12 @@ radio:
   sensitivity_dbm: -75.0  # Sensibilidad receptor (dBm)
   fade_margin_db: 10.0    # Margen de desvanecimiento Lm (dB)
                           # 0.0 = reproducir legacy v3/v4 (sin Lm)
+  noise_floor_dbm: -95.0  # Piso de ruido del receptor (dBm, Fase 7)
+                          # Base del SNR; NO es constante universal
+  channel_width_mhz: 20   # Ancho de canal (MHz, Fase 7): 20/40/80/160
+                          # NO entra en FSPL; se valida contra la banda
+  wifi_standard: "802.11ax"  # Estándar Wi-Fi (metadato, Fase 7)
+                             # 802.11n/ac/ax/be = Wi-Fi 4/5/6/7
 
 thresholds:
   rssi_target_dbm: -67.0      # RSSI objetivo (comparación estricta: >)
@@ -24,6 +30,7 @@ thresholds:
   good_min_dbm: -67.0         # P_rx >= -67 => Buena
   regular_min_dbm: -75.0      # P_rx >= -75 => Regular
   weak_min_dbm: -85.0         # P_rx >= -85 => Debil (si no, sin cobertura)
+  snr_target_db: 25.0         # Objetivo de SNR (dB, Fase 7): SNR >= umbral
 
 bands:
   - id: "band_2_4"

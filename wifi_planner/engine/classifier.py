@@ -18,6 +18,11 @@ Veredicto SOM:
     SOM < 10 dB         -> FALLIDO
 
 RSSI objetivo: P_rx > -67 dBm (comparación ESTRICTA, decisión C).
+
+Fase 7: el SNR COMPLEMENTA a RSSI/SOM, no los reemplaza. La calidad
+histórica (QualityClass), el veredicto SOM y el objetivo RSSI no
+cambian; se añaden ``meets_snr_target`` y el diagnóstico básico por
+cuadrantes ``rf_diagnostic`` (decisión AV/BC).
 """
 
 from __future__ import annotations
@@ -53,6 +58,47 @@ def meets_rssi_target(rx_power_dbm: float, thresholds) -> bool:
     (decisión C: no es >=).
     """
     return rx_power_dbm > thresholds.rssi_target_dbm
+
+
+def meets_snr_target(snr_db: float, thresholds) -> bool:
+    """True si el SNR alcanza el objetivo configurado (F7).
+
+    Comparación SNR >= thresholds.snr_target_db (decisión AW): el
+    objetivo de SNR es "alcanzar el objetivo", a diferencia del RSSI
+    objetivo que usa comparación estricta (decisión C).
+    """
+    return snr_db >= thresholds.snr_target_db
+
+
+def rf_diagnostic(rx_power_dbm: float, snr_db: float, thresholds) -> str:
+    """Diagnóstico RF básico en cuatro cuadrantes (F7, decisión BC).
+
+    Combina el criterio histórico de RSSI con el objetivo de SNR sin
+    inventar causas (no habla de interferencia, canales ni hidden node:
+    F7 no los modela). Solo describe el estado medido:
+
+        RSSI adecuado / SNR adecuado
+        RSSI adecuado / SNR bajo
+        RSSI bajo / SNR adecuado
+        RSSI bajo / SNR bajo
+
+    Args:
+        rx_power_dbm: P_rx en dBm.
+        snr_db: SNR en dB.
+        thresholds: CoverageThresholds (rssi_target_dbm, snr_target_db).
+
+    Returns:
+        Etiqueta del cuadrante.
+    """
+    rssi_ok = meets_rssi_target(rx_power_dbm, thresholds)
+    snr_ok = meets_snr_target(snr_db, thresholds)
+    if rssi_ok and snr_ok:
+        return "RSSI adecuado / SNR adecuado"
+    if rssi_ok:
+        return "RSSI adecuado / SNR bajo"
+    if snr_ok:
+        return "RSSI bajo / SNR adecuado"
+    return "RSSI bajo / SNR bajo"
 
 
 def classify_som(som_db: float, thresholds) -> Verdict:

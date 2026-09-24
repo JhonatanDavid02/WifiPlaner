@@ -12,6 +12,10 @@ from ui.session import HEATMAP_ALL_APS, Tool
 BAND_LABEL_BY_ID = {"band_2_4": "2.4 GHz", "band_5": "5 GHz", "band_6": "6 GHz"}
 BAND_ID_BY_LABEL = {label: band_id for band_id, label in BAND_LABEL_BY_ID.items()}
 
+# Etiquetas visibles ↔ métricas del heatmap (Fase 7).
+METRIC_LABEL_BY_ID = {"rssi": "RSSI", "snr": "SNR"}
+METRIC_ID_BY_LABEL = {label: metric_id for metric_id, label in METRIC_LABEL_BY_ID.items()}
+
 
 class Toolbar(ttk.Frame):
     """Herramientas, banda, resolución, heatmap, dimensiones y simulación."""
@@ -29,6 +33,8 @@ class Toolbar(ttk.Frame):
         on_resolution: Callable[[float], None] | None = None,
         on_heatmap_toggle: Callable[[bool], None] | None = None,
         on_heatmap_ap: Callable[[str], None] | None = None,
+        on_heatmap_metric: Callable[[str], None] | None = None,
+        on_rf_settings: Callable[[], None] | None = None,
         **kwargs,
     ) -> None:
         super().__init__(master, **kwargs)
@@ -40,11 +46,14 @@ class Toolbar(ttk.Frame):
         self._on_resolution = on_resolution or (lambda _r: None)
         self._on_heatmap_toggle = on_heatmap_toggle or (lambda _e: None)
         self._on_heatmap_ap = on_heatmap_ap or (lambda _a: None)
+        self._on_heatmap_metric = on_heatmap_metric or (lambda _m: None)
+        self._on_rf_settings = on_rf_settings or (lambda: None)
         self._tool_var = tk.StringVar(value=Tool.SELECT.value)
         self._band_var = tk.StringVar(value="2.4 GHz")
         self._res_var = tk.StringVar(value="0.50")
         self._heatmap_var = tk.BooleanVar(value=True)
         self._ap_var = tk.StringVar(value=HEATMAP_ALL_APS)
+        self._metric_var = tk.StringVar(value=METRIC_LABEL_BY_ID["rssi"])
         self._ap_combo = None
         self._build()
 
@@ -112,16 +121,31 @@ class Toolbar(ttk.Frame):
             command=self._heatmap_changed,
         ).grid(row=0, column=12, padx=4, pady=4)
 
+        # Fase 7: métrica del heatmap (vista: RSSI / SNR).
+        ttk.Label(self, text="Métrica:").grid(row=0, column=13, **pad)
+        metric_combo = ttk.Combobox(
+            self,
+            textvariable=self._metric_var,
+            values=list(METRIC_LABEL_BY_ID.values()),
+            state="readonly",
+            width=7,
+        )
+        metric_combo.grid(row=0, column=14, **pad)
+        metric_combo.bind("<<ComboboxSelected>>", self._metric_changed)
+
         ttk.Button(self, text="Eliminar", command=self._on_delete).grid(
-            row=0, column=13, padx=4, pady=4
-        )
-        ttk.Button(self, text="Espacio…", command=self._on_dimensions).grid(
-            row=0, column=14, padx=4, pady=4
-        )
-        ttk.Button(self, text="Simular", command=self._on_simulate).grid(
             row=0, column=15, padx=4, pady=4
         )
-        self.columnconfigure(16, weight=1)
+        ttk.Button(self, text="Espacio…", command=self._on_dimensions).grid(
+            row=0, column=16, padx=4, pady=4
+        )
+        ttk.Button(self, text="Config RF…", command=self._on_rf_settings).grid(
+            row=0, column=17, padx=4, pady=4
+        )
+        ttk.Button(self, text="Simular", command=self._on_simulate).grid(
+            row=0, column=18, padx=4, pady=4
+        )
+        self.columnconfigure(19, weight=1)
 
     def set_ap_choices(self, choices: list[str], current: str | None = None) -> None:
         """Actualiza el selector de AP.
@@ -165,6 +189,16 @@ class Toolbar(ttk.Frame):
         """Sincroniza el checkbox del heatmap con el modelo."""
         self._heatmap_var.set(bool(enabled))
 
+    def set_metric(self, metric_id: str) -> None:
+        """Sincroniza el combo de métrica con el modelo ('rssi'/'snr')."""
+        label = METRIC_LABEL_BY_ID.get(metric_id)
+        if label:
+            self._metric_var.set(label)
+
+    def get_metric(self) -> str:
+        """Id interno de la métrica seleccionada ('rssi' por defecto)."""
+        return METRIC_ID_BY_LABEL.get(self._metric_var.get(), "rssi")
+
     def _tool_changed(self) -> None:
         self._on_tool(Tool(self._tool_var.get()))
 
@@ -184,3 +218,6 @@ class Toolbar(ttk.Frame):
 
     def _heatmap_changed(self) -> None:
         self._on_heatmap_toggle(bool(self._heatmap_var.get()))
+
+    def _metric_changed(self, _event=None) -> None:
+        self._on_heatmap_metric(self.get_metric())

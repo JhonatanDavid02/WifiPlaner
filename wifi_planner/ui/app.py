@@ -9,7 +9,7 @@ from core.material import MaterialAttenuationError
 from persistence import ProjectFormatError
 from ui import theme
 from ui.coverage_renderer import build_heatmap_image
-from ui.dialogs import ProjectDimensionsDialog
+from ui.dialogs import RFSettingsDialog, ProjectDimensionsDialog
 from ui.editor_canvas import EditorCanvas
 from ui.panels import PropertiesPanel, Toolbar
 from ui.panels.toolbar import BAND_LABEL_BY_ID
@@ -170,6 +170,7 @@ class WifiPlannerApp(tk.Tk):
         )
         self.toolbar.set_resolution_value(self.session.grid_resolution_m)
         self.toolbar.set_heatmap_enabled(self.session.heatmap_enabled)
+        self.toolbar.set_metric(self.session.heatmap_metric)
         self.toolbar._tool_var.set(self.session.tool.value)
         self._refresh_ap_selector()
         self.properties.refresh()
@@ -224,6 +225,8 @@ class WifiPlannerApp(tk.Tk):
             on_resolution=self._on_resolution,
             on_heatmap_toggle=self._on_heatmap_toggle,
             on_heatmap_ap=self._on_heatmap_ap,
+            on_heatmap_metric=self._on_heatmap_metric,
+            on_rf_settings=self._on_rf_settings,
         )
         self.toolbar.pack(fill="x", padx=6, pady=(6, 2))
         self._refresh_ap_selector()
@@ -347,6 +350,53 @@ class WifiPlannerApp(tk.Tk):
             return
         self._refresh_ap_selector()
         self._schedule_heatmap()
+
+    def _on_heatmap_metric(self, metric: str) -> None:
+        """Métrica del heatmap (RSSI/SNR): invalida y repinta el resultado."""
+        try:
+            self.session.set_heatmap_metric(metric)
+        except ValueError as exc:
+            messagebox.showwarning("Métrica", str(exc), parent=self)
+            return
+        self.toolbar.set_metric(self.session.heatmap_metric)
+        self._schedule_heatmap()
+
+    def _on_rf_settings(self) -> None:
+        """Diálogo de configuración RF global (Fase 7)."""
+        radio = self.session.project.radio
+        thresholds = self.session.project.thresholds
+
+        def apply(
+            noise_floor_dbm: float,
+            snr_target_db: float,
+            rssi_target_dbm: float,
+            wifi_standard: str,
+            channel_width_mhz: int,
+        ) -> None:
+            try:
+                self.session.apply_rf_settings(
+                    noise_floor_dbm=noise_floor_dbm,
+                    snr_target_db=snr_target_db,
+                    rssi_target_dbm=rssi_target_dbm,
+                    wifi_standard=wifi_standard,
+                    channel_width_mhz=channel_width_mhz,
+                )
+            except ValueError as exc:
+                messagebox.showerror("Configuración RF", str(exc), parent=self)
+                return
+            self.properties.refresh()
+            self._update_title()
+            self._schedule_heatmap()
+
+        RFSettingsDialog(
+            self,
+            noise_floor_dbm=radio.noise_floor_dbm,
+            snr_target_db=thresholds.snr_target_db,
+            rssi_target_dbm=thresholds.rssi_target_dbm,
+            wifi_standard=radio.wifi_standard,
+            channel_width_mhz=radio.channel_width_mhz,
+            on_apply=apply,
+        )
 
     def _refresh_ap_selector(self) -> None:
         """Sincroniza la combobox de AP con el modelo (etiquetas legibles)."""
@@ -494,6 +544,7 @@ class WifiPlannerApp(tk.Tk):
             result,
             self.viewport,
             cell_size_m=self.session.grid_resolution_m,
+            metric=self.session.heatmap_metric,
         )
         self.canvas.draw_heatmap(image)
         # render_project re-aplica la capa heatmap bajo paredes/APs

@@ -547,6 +547,117 @@ empíricamente (sondas de parser, invariantes y residuales).
 
 ---
 
+## Fase 7 — Extensión RF básica
+
+### Decisión AU — Piso de ruido configurable por radio
+
+- **Decisión:** `RadioConfiguration.noise_floor_dbm` con default
+  centralizado `-95.0` dBm y rango `[-200, 0]` (finito obligatorio).
+  El piso es **propiedad de la radio**, no un literal de UI ni una
+  constante universal.
+- **Razón:** el piso de ruido depende del entorno y del receptor; vive
+  en `core/` para que motor, UI y persistencia compartan la única fuente
+  de verdad. Por radio (y no como clave `project`) permite en el futuro
+  configuración por AP sin romper el key-set F6.
+
+### Decisión AV — El SNR complementa a RSSI/SOM, no los reemplaza
+
+- **Decisión:** `SNR = P_rx − noise_floor` se añade a
+  `LinkEvaluation` (`snr_db`, `noise_floor_dbm`, `snr_meets_target`).
+  `classify_quality`, `classify_som` y `meets_rssi_target` **no cambian**.
+- **Razón:** RSSI mide potencia y SOM margen frente a sensibilidad; el
+  SNR mide relación señal/ruido. Son tres preguntas distintas y F7 es
+  extensión, no revisión (congelación de F1–F6).
+
+### Decisión AW — Umbral de SNR con `>=` y default 25 dB
+
+- **Decisión:** `CoverageThresholds.snr_target_db` (default `25.0`,
+  rango `[-20, 60]`, finito) con comparación `snr_db >= objetivo`
+  (`meets_snr_target`). Default 25 dB porque con piso −95 y objetivo
+  RSSI −67 el SNR en el umbral RSSI es 28 dB: cumplir RSSI implica
+  cumplir SNR y no aparece el cuadrante contradictorio en los defaults.
+- **Razón:** el objetivo de SNR es “alcanzar” sí/no (>=), a diferencia
+  del RSSI objetivo que sigue estricto por la decisión C (`>`); ambas
+  convivencias quedan documentadas en el docstring.
+
+### Decisión AX — Estándar Wi-Fi como metadato (sin efecto RF)
+
+- **Decisión:** `RadioConfiguration.wifi_standard` ∈
+  `802.11n/ac/ax/be` (default `802.11ax`), etiquetado por
+  `wifi_generation()` → “Wi-Fi 4/5/6/7” y “Wi-Fi 6E” si `ax` y
+  `f >= 5925 MHz`. No altera ninguna fórmula.
+- **Razón:** era un hueco informativo (mostrar “qué red planificamos”)
+  que no exige PHY; cualquier efecto real de estándar pertenece a fases
+  posteriores explicitamente excluidas de F7.
+
+### Decisión AY — Ancho de canal: propiedad de la radio, validado contra la banda, fuera de FSPL
+
+- **Decisión:** `RadioConfiguration.channel_width_mhz` ∈
+  `(20, 40, 80, 160)` (default 20, normalizado a `int`); se valida
+  **una sola vez** al entrar en `simulate_coverage` con
+  `allowed_channel_widths_mhz(f)`: `<3000 MHz → (20, 40)`, si no
+  `(20, 40, 80, 160)`. `ValueError` claro capturado por la UI.
+- **Razón:** FSPL es una fórmula de espacio libre y no tiene término
+  de ancho de canal; meter el ancho en el link budget sería física
+  inventada. Su único papel en F7 es coherencia de configuración
+  (un AP de 160 MHz en 2.4 GHz es un error de usuario, no un cálculo).
+
+### Decisión AZ — Compatibilidad F6: claves opcionales en schema v1
+
+- **Decisión:** dentro de `schema_version = 1`, `radio` gana
+  `noise_floor_dbm`/`channel_width_mhz`/`wifi_standard` y `thresholds`
+  gana `snr_target_db` como claves **opcionales al leer** (ausentes ⇒
+  defaults centralizados de `core/`) y **siempre escritas**. No se añade
+  ninguna clave de nivel `project`.
+- **Razón:** el paso 18 exigía detenerse si el schema se rompía; las
+  claves opcionales cumplen el requisito de “sin migración” y conservan
+  el key-set exacto de `document["project"]` (decisión AF/AT intacta).
+
+### Decisión BA — Métrica del heatmap es vista, no configuración
+
+- **Decisión:** `HeatmapMetric` (`rssi`/`snr`) en `EditorSession` con
+  `heatmap_metric` (default `rssi`), que invalida el heatmap pero **no**
+  marca `dirty` ni se persiste; se resetea a `rssi` al cargar/crear un
+  documento. Escala de color propia (`_SNR_STOPS`, 0–45 dB) con la
+  misma paleta; `legend_rows/legend_title/build_heatmap_image` ganan
+  el parámetro opcional `metric`.
+- **Razón:** es una lente de visualización sobre el mismo
+  `SimulationResult`; persistirla haría que abrir un proyecto “cambie
+  lo que ves” sin que el usuario editara nada.
+
+### Decisión BB — Estadísticas de SNR con el mismo ganador
+
+- **Decisión:** `_compute_stats` y `_merged_stats` añaden
+  `snr_min/max/avg_db`, `snr_target_db`, `points_meeting_snr_target`
+  y `snr_ratio`. En multi-AP el SNR sale de las evaluaciones ganadoras
+  (mejor RSSI, decisión U): nunca se promedian SNR entre APs.
+- **Razón:** mezclar SNR de APs distintos en un punto sería
+  interferencia encubierta, que F7 prohíbe; las stats antiguas no
+  cambian, solo se amplían.
+
+### Decisión BC — Diagnóstico RF básico en cuatro cuadrantes
+
+- **Decisión:** `rf_diagnostic(rx, snr, thresholds)` →
+  “RSSI adecuado/bajo / SNR adecuado/bajo”. Describe el estado medido
+  sin causas (nada de interferencia, canales ni hidden node).
+- **Razón:** es lo único que F7 puede afirmar con lo que modela;
+  inventar causas sería exactamente el tipo de física no justificada
+  que este proyecto evita.
+
+### Decisión BD — `apply_rf_settings` atómico y sincronizador
+
+- **Decisión:** `EditorSession.apply_rf_settings(...)` construye
+  radio y thresholds con `replace()` **antes** de tocar el proyecto
+  (un `ValueError` no deja estado parcial), después sincroniza la
+  radio de los APs existentes (F7 sin config por AP), invalida el
+  heatmap y marca `dirty`. El diálogo RF captura `ValueError` con
+  `showerror`.
+- **Razón:** cinco campos a la vez es la entrada más propensa a
+  errores de todo F7; la atomicidad en sesión (no en UI) garantiza que
+  la regla valga también para futuros llamadores no interactivos.
+
+---
+
 ## Discrepancias encontradas (no resueltas silenciosamente)
 
 ### 1. Distancias `d_max` contradictorias

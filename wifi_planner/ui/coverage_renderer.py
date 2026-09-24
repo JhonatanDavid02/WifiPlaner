@@ -34,7 +34,25 @@ _STOPS: tuple[tuple[float, tuple[int, int, int]], ...] = (
     (-90.0, (90, 60, 90)),      # morado apagado
 )
 
+# Fase 7: escala visual de SNR (dB) — MISMAS paletas, otra dirección:
+# 0 dB (malo) → 45 dB (excelente). Solo presentación (decisión BA).
+_SNR_SCALE_MIN = 0.0
+_SNR_SCALE_MAX = 45.0
+
+_SNR_STOPS: tuple[tuple[float, tuple[int, int, int]], ...] = (
+    (0.0, (90, 60, 90)),      # morado apagado (sin señal útil)
+    (10.0, (200, 80, 80)),    # rojo
+    (20.0, (230, 140, 70)),   # naranja
+    (25.0, (230, 190, 80)),   # ámbar (umbral por defecto)
+    (35.0, (150, 200, 80)),   # verde lima
+    (45.0, (80, 200, 120)),   # verde brillante
+)
+
 DEFAULT_HEATMAP_ALPHA = 110  # 0–255; semitransparente sobre el plano
+
+# Métricas soportadas por el render (vista; la validación es aquí y en
+# la sesión, nunca en el engine).
+HEATMAP_METRICS = ("rssi", "snr")
 
 
 def _lerp_color(rssi_a: float, rgb_a, rssi_b: float, rgb_b: float, rssi: float) -> tuple[int, int, int]:
@@ -49,29 +67,51 @@ def _lerp_color(rssi_a: float, rgb_a, rssi_b: float, rgb_b: float, rssi: float) 
     )
 
 
+def _stops_to_rgb(
+    value: float,
+    scale_min: float,
+    scale_max: float,
+    stops: tuple[tuple[float, tuple[int, int, int]], ...],
+) -> tuple[int, int, int]:
+    """Interpola ``value`` (ya acotado a la escala) entre paradas ordenadas."""
+    v = max(scale_min, min(scale_max, float(value)))
+    ordered = sorted(stops, key=lambda s: s[0])
+    for i in range(len(ordered) - 1):
+        a_v, a_rgb = ordered[i]
+        b_v, b_rgb = ordered[i + 1]
+        if a_v <= v <= b_v:
+            return _lerp_color(a_v, a_rgb, b_v, b_rgb, v)
+    if v <= ordered[0][0]:
+        return ordered[0][1]
+    return ordered[-1][1]
+
+
 def rssi_to_rgb(rssi_dbm: float) -> tuple[int, int, int]:
     """Convierte RSSI (dBm) en un color RGB de la escala visual continua.
 
     No altera umbrales RF; solo presentación.
     """
-    rssi = max(_RSSI_SCALE_MIN, min(_RSSI_SCALE_MAX, float(rssi_dbm)))
-    # _STOPS ordenado de fuerte (-30) a débil (-90): invertir recorrido
-    stops = sorted(_STOPS, key=lambda s: s[0])  # -90 … -30
-    # Recorrer de débil a fuerte o al revés: interpolar entre vecinos
-    for i in range(len(stops) - 1):
-        a_rssi, a_rgb = stops[i]
-        b_rssi, b_rgb = stops[i + 1]
-        if a_rssi <= rssi <= b_rssi:
-            return _lerp_color(a_rssi, a_rgb, b_rssi, b_rgb, rssi)
-    # Fuera de rangos (no debería ocurrir tras clamp)
-    if rssi <= stops[0][0]:
-        return stops[0][1]
-    return stops[-1][1]
+    return _stops_to_rgb(rssi_dbm, _RSSI_SCALE_MIN, _RSSI_SCALE_MAX, _STOPS)
 
 
 def rssi_to_color(rssi_dbm: float, alpha: int = DEFAULT_HEATMAP_ALPHA) -> tuple[int, int, int, int]:
     """RSSI → RGBA para la imagen del heatmap."""
     r, g, b = rssi_to_rgb(rssi_dbm)
+    a = max(0, min(255, int(alpha)))
+    return (r, g, b, a)
+
+
+def snr_to_rgb(snr_db: float) -> tuple[int, int, int]:
+    """Convierte SNR (dB) en un color RGB (escala 0–45 dB, Fase 7).
+
+    No altera umbrales RF; solo presentación (misma paleta que RSSI).
+    """
+    return _stops_to_rgb(snr_db, _SNR_SCALE_MIN, _SNR_SCALE_MAX, _SNR_STOPS)
+
+
+def snr_to_color(snr_db: float, alpha: int = DEFAULT_HEATMAP_ALPHA) -> tuple[int, int, int, int]:
+    """SNR → RGBA para la imagen del heatmap."""
+    r, g, b = snr_to_rgb(snr_db)
     a = max(0, min(255, int(alpha)))
     return (r, g, b, a)
 
@@ -88,12 +128,40 @@ def quality_color(quality: QualityClass) -> tuple[int, int, int]:
     return mapping.get(quality, (150, 150, 150))
 
 
-def legend_rows(thresholds: CoverageThresholds) -> list[dict]:
+def legend_title(metric: str = "rssi") -> str:
+    """Título de la leyenda según la métrica visible (Fase 7)."""
+    if metric == "snr":
+        return "SNR (dB)"
+    if metric == "rssi":
+        return "Cobertura Wi-Fi"
+    raise ValueError(f"Métrica no soportada: {metric!r}")
+
+
+def legend_rows(thresholds: CoverageThresholds, metric: str = "rssi") -> list[dict]:
     """Filas de leyenda usando los umbrales del modelo (no mágicos en UI).
 
-    Cada fila: label, color RGB, rango legible en dBm.
+    Cada fila: label, color RGB, rango legible en dBm (o dB para SNR).
     El denominador de los % de cobertura es: puntos totales del grid.
+
+    - ``rssi``: 5 filas de calidad (idénticas a Fase 4/5, contrato).
+    - ``snr``: 2 filas semánticas frente a ``snr_target_db`` (Fase 7).
     """
+    if metric == "snr":
+        target = thresholds.snr_target_db
+        return [
+            {
+                "label": "SNR objetivo",
+                "color": (80, 200, 120),
+                "range": f"≥ {target:g} dB",
+            },
+            {
+                "label": "Por debajo",
+                "color": (120, 70, 90),
+                "range": f"< {target:g} dB",
+            },
+        ]
+    if metric != "rssi":
+        raise ValueError(f"Métrica no soportada: {metric!r}")
     return [
         {
             "label": QualityClass.EXCELLENT.value,
@@ -130,6 +198,7 @@ def build_heatmap_image(
     viewport: Viewport,
     alpha: int = DEFAULT_HEATMAP_ALPHA,
     cell_size_m: float | None = None,
+    metric: str = "rssi",
 ) -> Image.Image | None:
     """Construye la imagen RGBA del heatmap alineada al rect del piso.
 
@@ -138,10 +207,19 @@ def build_heatmap_image(
     es la resolución del grid si se infiere del espaciado, o un valor
     indicado por el llamador.
 
+    Args:
+        metric: ``"rssi"`` (default, Fase 4/5) o ``"snr"`` (Fase 7);
+            decide qué valor de cada evaluación se colorea.
+
     Returns:
         Imagen RGBA del tamaño del rect del piso en píxeles, o None si
         no hay evaluaciones.
+
+    Raises:
+        ValueError: si ``metric`` no es soportada.
     """
+    if metric not in HEATMAP_METRICS:
+        raise ValueError(f"Métrica no soportada: {metric!r}")
     evaluations = result.evaluations
     if not evaluations:
         return None
@@ -158,11 +236,13 @@ def build_heatmap_image(
 
     half_px = max(1.0, viewport.world_to_screen_len(cell_size_m) / 2.0)
 
+    color_fn = snr_to_color if metric == "snr" else rssi_to_color
     for ev in evaluations:
         sx, sy = viewport.world_to_screen(ev.point)
         cx = sx - x1f
         cy = sy - y1f
-        color = rssi_to_color(ev.rx_power_dbm, alpha=alpha)
+        value = ev.snr_db if metric == "snr" else ev.rx_power_dbm
+        color = color_fn(value, alpha=alpha)
         draw.rectangle(
             (cx - half_px, cy - half_px, cx + half_px, cy + half_px),
             fill=color,
@@ -216,6 +296,24 @@ def stats_text(result: SimulationResult) -> str:
         count = int(quality_counts.get(label, 0))
         pct = 100.0 * count / n
         lines.append(f"  {label}: {pct:.1f}% ({count})")
+
+    # Fase 7: bloque SNR solo si las stats lo traen (los resultados
+    # sintéticos antiguos no lo tienen; la presencia es el contrato).
+    if "snr_min_db" in stats:
+        lines.extend(
+            [
+                "",
+                "SNR (dB):",
+                f"  mínimo: {stats['snr_min_db']:.2f} dB",
+                f"  máximo: {stats['snr_max_db']:.2f} dB",
+                f"  promedio: {stats['snr_avg_db']:.2f} dB",
+                (
+                    f"  ≥ objetivo {stats.get('snr_target_db', 0):g} dB: "
+                    f"{100.0 * stats.get('snr_ratio', 0.0):.1f}% "
+                    f"({int(stats.get('points_meeting_snr_target', 0))})"
+                ),
+            ]
+        )
 
     # Fase 5: dominancia del AP mejor en cada punto (cobertura combinada).
     dominance = stats.get("ap_dominance_percent") or {}

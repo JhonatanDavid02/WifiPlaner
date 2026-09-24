@@ -8,11 +8,27 @@ V1: estructura mínima lista para recibir pisos y dispositivos.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 from core.band import DEFAULT_BANDS, FrequencyBand
 from core.material import Material, default_materials
 from core.radio import RadioConfiguration
+
+# Objetivo de SNR por defecto (dB). Valor de referencia de diseño para
+# datos; NO es una verdad universal (decisión AW en docs/decisions.md).
+# Con los defaults (piso -95, RSSI objetivo -67) el punto en el umbral
+# de RSSI tiene SNR = 28 dB, así que 25 dB mantiene la coherencia:
+# cumplir RSSI implica cumplir SNR.
+DEFAULT_SNR_TARGET_DB = 25.0
+
+# Rango aceptado para el objetivo de SNR (dB):
+# - mínimo -20: por debajo de 0 dB (señal bajo el ruido) ningún
+#   objetivo de diseño tiene sentido.
+# - máximo 60: por encima del SNR máximo que este modelo produce en
+#   la práctica (RSSI típicamente >= -35 dBm con piso -95).
+SNR_TARGET_MIN_DB = -20.0
+SNR_TARGET_MAX_DB = 60.0
 
 
 @dataclass(frozen=True)
@@ -23,12 +39,17 @@ class CoverageThresholds:
 
     Attributes:
         rssi_target_dbm: RSSI objetivo mínimo en dBm. Comparación estricta: P_rx > umbral.
+            Es el **coverage threshold** del proyecto (F7 lo mantiene
+            con este nombre histórico; no se renombra).
         som_aprobado_min_db: SOM mínimo para APROBADO en dB.
         som_riesgo_min_db: SOM mínimo para RIESGO en dB (por debajo => FALLIDO).
         excellent_min_dbm: Piso de calidad "Excelente" en dBm.
         good_min_dbm: Piso de calidad "Buena" en dBm.
         regular_min_dbm: Piso de calidad "Regular" en dBm.
         weak_min_dbm: Piso de calidad "Débil" en dBm (por debajo => sin cobertura útil).
+        snr_target_db: Objetivo de SNR en dB (F7). Comparación SNR >= umbral.
+            Rango: [-20, 60] dB. No reemplaza al RSSI objetivo: son
+            conceptos distintos (potencia vs relación señal/ruido).
     """
 
     rssi_target_dbm: float = -67.0
@@ -38,6 +59,26 @@ class CoverageThresholds:
     good_min_dbm: float = -67.0
     regular_min_dbm: float = -75.0
     weak_min_dbm: float = -85.0
+    snr_target_db: float = DEFAULT_SNR_TARGET_DB
+
+    def __post_init__(self) -> None:
+        for name in ("rssi_target_dbm", "snr_target_db"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(
+                    f"CoverageThresholds.{name} debe ser un número."
+                )
+            if not math.isfinite(float(value)):
+                raise ValueError(
+                    f"CoverageThresholds.{name} debe ser finito."
+                )
+            object.__setattr__(self, name, float(value))
+        if not (SNR_TARGET_MIN_DB <= self.snr_target_db <= SNR_TARGET_MAX_DB):
+            raise ValueError(
+                "CoverageThresholds.snr_target_db debe estar en "
+                f"[{SNR_TARGET_MIN_DB:g}, {SNR_TARGET_MAX_DB:g}] dB "
+                f"(got {self.snr_target_db:g})."
+            )
 
 
 DEFAULT_THRESHOLDS = CoverageThresholds()

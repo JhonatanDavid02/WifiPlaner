@@ -215,10 +215,11 @@ class EditorCanvas(tk.Canvas):
             )
 
     def _draw_legend(self) -> None:
-        """Leyenda de cobertura (umbrales del modelo, no mágicos)."""
-        from ui.coverage_renderer import legend_rows
+        """Leyenda de cobertura/SNR (umbrales del modelo, no mágicos)."""
+        from ui.coverage_renderer import legend_rows, legend_title
 
-        rows = legend_rows(self.session.project.thresholds)
+        metric = getattr(self.session, "heatmap_metric", "rssi")
+        rows = legend_rows(self.session.project.thresholds, metric=metric)
         x, y = 12, 12
         width, row_h = 148, 16
         height = 22 + row_h * len(rows) + 6
@@ -229,7 +230,7 @@ class EditorCanvas(tk.Canvas):
         )
         self.create_text(
             x + 8, y + 12, anchor="w",
-            text="Cobertura Wi-Fi", fill=theme.FG, font=("Segoe UI", 9, "bold"),
+            text=legend_title(metric), fill=theme.FG, font=("Segoe UI", 9, "bold"),
         )
         yy = y + 26
         for row in rows:

@@ -12,6 +12,7 @@ SOM / quality / veredicto son los del AP ganador (no se promedian).
 
 from __future__ import annotations
 
+from core.project import CoverageThresholds
 from core.result import LinkEvaluation, SimulationResult
 
 
@@ -105,6 +106,7 @@ def _merged_stats(
         return {}
 
     rx_values = [e.rx_power_dbm for e in evaluations]
+    snr_values = [e.snr_db for e in evaluations]
     quality_counts: dict[str, int] = {}
     for evaluation in evaluations:
         key = evaluation.quality.value
@@ -112,6 +114,10 @@ def _merged_stats(
 
     meets_count = sum(1 for e in evaluations if e.rssi_meets_target)
     sample_target = results[0].stats.get("rssi_target_dbm", -67.0)
+    snr_meets_count = sum(1 for e in evaluations if e.snr_meets_target)
+    sample_snr_target = results[0].stats.get(
+        "snr_target_db", CoverageThresholds().snr_target_db
+    )
     total = len(evaluations)
 
     quality_percent = {
@@ -142,6 +148,14 @@ def _merged_stats(
         "rssi_target_dbm": sample_target,
         "points_meeting_target": meets_count,
         "coverage_ratio": round(meets_count / total, 4),
+        # Fase 7: SNR del AP ganador por punto (nunca se promedia entre
+        # APs; el ganador sigue siendo el de mejor RSSI, decisión U/BB).
+        "snr_min_db": min(snr_values),
+        "snr_max_db": max(snr_values),
+        "snr_avg_db": round(sum(snr_values) / total, 2),
+        "snr_target_db": sample_snr_target,
+        "points_meeting_snr_target": snr_meets_count,
+        "snr_ratio": round(snr_meets_count / total, 4),
         "ap_dominance_counts": dominance_counts,
         "ap_dominance_percent": dominance_percent,
     }

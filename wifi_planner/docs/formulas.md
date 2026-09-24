@@ -211,6 +211,7 @@ para cada punto p en CoverageGrid.points():
     L_obstacles = Σ L_wall   (trace_walls AP → p, decisión K)
     P_rx = link_budget(..., L_obstacles)
     SOM  = P_rx − sensibilidad
+    SNR  = P_rx − piso de ruido      (Fase 7, ver sección 11)
     calidad = classify_quality(P_rx, umbrales)
 ```
 
@@ -220,7 +221,8 @@ para cada punto p en CoverageGrid.points():
 - Si un punto del grid cae **sobre el AP** (`d = 0`), `evaluate_link`
   usa un piso `MIN_FSPL_DISTANCE_M = 0.1 m` solo para FSPL
   (decisión T); la fórmula FSPL no se modifica.
-- Visualización: color continuo de `P_rx` en `ui/coverage_renderer`
+- Visualización: color continuo de `P_rx` (métrica `rssi`, por
+  defecto) o de `SNR` (métrica `snr`, Fase 7) en `ui/coverage_renderer`
   (solo presentación; no altera umbrales RF).
 - Invalidación + debounce al editar modelo (decisión O).
 
@@ -238,3 +240,78 @@ SOM  = −55.74 − (−75)                       = 19.26 dB  → RIESGO
 
 Este caso está incluido en la golden data (`tests/fixtures/golden_data.py`,
 Tabla 2) y se valida en `tests/test_link_budget.py`.
+
+---
+
+## 11. SNR, piso de ruido y metadatos RF (Fase 7)
+
+### Relación señal/ruido
+
+```
+SNR(dB) = P_rx − Noise Floor
+```
+
+- `P_rx` es el RSSI de la sección 3 (mismo valor, misma fórmula).
+- `Noise Floor` (piso de ruido) es un parámetro de la radio
+  (`RadioConfiguration.noise_floor_dbm`), por defecto **−95 dBm**,
+  rango `[-200, 0]`, finito (decisión AU). **No es una constante
+  universal**: depende del entorno y del receptor.
+- Redondeo a 2 decimales, igual que el resto de la cadena.
+
+Implementación: `engine.link_budget.signal_to_noise_ratio`;
+`evaluate_link` lo guarda en `LinkEvaluation.snr_db` junto con el
+`noise_floor_dbm` usado.
+
+### Umbral de SNR
+
+```
+SNR cumple objetivo  ⟺  SNR ≥ snr_target_db
+```
+
+- `CoverageThresholds.snr_target_db`, por defecto **25 dB**
+  (rango `[-20, 60]`), comparación `>=` (decisión AW).
+- Coherencia de los defaults: con piso −95 y objetivo RSSI −67, el
+  SNR en el umbral RSSI es `(−67) − (−95) = 28 dB ≥ 25 dB`; cumplir
+  el RSSI implica cumplir el SNR, así que los defaults no generan el
+  cuadrante contradictorio “RSSI bueno / SNR malo”.
+- El RSSI objetivo **sigue estricto** (`>`, decisión C): son
+  comparaciones distintas a propósito.
+
+### Por qué el SNR complementa (y no sustituye) a RSSI/SOM
+
+| Métrica | Responde | Depende de |
+|---|---|---|
+| RSSI (`P_rx`) | ¿Llega suficiente potencia? | potencia, distancia, paredes |
+| SOM | ¿Cuánto margen sobre la sensibilidad? | `P_rx` y sensibilidad |
+| SNR | ¿Cuánta potencia hay sobre el ruido? | `P_rx` y piso de ruido |
+
+Son tres preguntas distintas sobre el mismo enlace: F7 las muestra en
+paralelo (diagnóstico en cuatro cuadrantes `rf_diagnostic`,
+decisión BC) sin alterar las clases de calidad ni el veredicto SOM.
+
+### Ancho de canal y estándar: metadatos, no fórmula
+
+- `channel_width_mhz` ∈ `(20, 40, 80, 160)` (default 20) se valida
+  **contra la banda** al simular (`allowed_channel_widths_mhz`):
+  familia 2.4 GHz (`f < 3000 MHz`) admite 20/40 MHz; 5/6 GHz admite
+  20/40/80/160 MHz. Un ancho incompatible ⇒ `ValueError` (decisión AY).
+- **FSPL no recibe el ancho de canal.** FSPL es pérdida en espacio
+  libre y no tiene término de ancho; usar el ancho en el link budget
+  sería física inventada. Su papel en F7 es solo coherencia de
+  configuración.
+- `wifi_standard` ∈ `802.11n/ac/ax/be` (default `802.11ax`) es un
+  metadato etiquetado por `wifi_generation()` (“Wi-Fi 4/5/6/7”,
+  “Wi-Fi 6E” con `ax` a `f ≥ 5925 MHz`). Sin efecto RF (decisión AX).
+
+### Estadísticas de SNR (Fase 7)
+
+Además de las de RSSI/clases/dominancia (secciones 7 y 10):
+
+```
+snr_min_db, snr_max_db, snr_avg_db, snr_target_db,
+points_meeting_snr_target, snr_ratio = points / point_count
+```
+
+En combinación multi-AP el SNR proviene del AP **ganador por RSSI**
+(decisión BB): nunca se promedian SNR entre APs (eso sería
+interferencia encubierta, fuera del alcance de F7).

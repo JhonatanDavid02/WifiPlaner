@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from core.geometry import Point2D
+from core.radio import DEFAULT_NOISE_FLOOR_DBM
 
 
 class QualityClass(str, Enum):
@@ -62,6 +63,12 @@ class LinkEvaluation:
         rssi_meets_target: True si P_rx > umbral RSSI (comparación estricta).
         verdict: Veredicto SOM.
         quality: Clase de calidad estimada.
+        noise_floor_dbm: Piso de ruido usado en el cálculo, en dBm (F7).
+            Por defecto el default centralizado; evaluate_link lo toma
+            de la radio.
+        snr_db: SNR = P_rx − piso de ruido, en dB (F7).
+            0.0 solo en constructores manuales; evaluate_link lo calcula.
+        snr_meets_target: True si SNR >= objetivo de SNR (F7).
     """
 
     access_point_id: str
@@ -76,6 +83,9 @@ class LinkEvaluation:
     rssi_meets_target: bool
     verdict: Verdict
     quality: QualityClass
+    noise_floor_dbm: float = DEFAULT_NOISE_FLOOR_DBM
+    snr_db: float = 0.0
+    snr_meets_target: bool = False
 
 
 @dataclass(frozen=True)

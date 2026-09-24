@@ -3,7 +3,7 @@
 Flujo por punto:
 
     distancia → FSPL → trace_walls (L_obstacles) → link_budget
-        → P_rx / SOM → clasificación
+        → P_rx / SOM / SNR → clasificación
 
 Fase 4: la simulación espacial (heatmap) reutiliza esta misma función
 pasando los puntos de ``CoverageGrid``. No hay fórmulas duplicadas.
@@ -16,6 +16,7 @@ import time
 from typing import Sequence
 
 from core.geometry import Point2D
+from core.radio import allowed_channel_widths_mhz
 from core.result import LinkEvaluation, ObstacleLoss, SimulationResult
 from core.wall import Wall
 from engine.link_budget import evaluate_link
@@ -53,13 +54,26 @@ def simulate_coverage(
         SimulationResult con una LinkEvaluation por punto evaluado.
 
     Raises:
-        ValueError: si no hay puntos que evaluar.
+        ValueError: si no hay puntos que evaluar, o si el ancho de
+            canal de la radio no es compatible con la banda (Fase 7:
+            2.4 GHz admite 20/40 MHz; 5/6 GHz 20/40/80/160 MHz).
         MaterialAttenuationError: si una pared cruzada no tiene datos
             de atenuación para la banda (p. ej. 6 GHz).
     """
     if sample_points is None and client is None:
         raise ValueError(
             "Se requiere al menos sample_points o client para simular."
+        )
+
+    # Compatibilidad ancho de canal × banda (Fase 7, decisión AY).
+    # El ancho NO entra en FSPL; solo se valida aquí, un único punto.
+    allowed_widths = allowed_channel_widths_mhz(frequency_band.frequency_mhz)
+    width = access_point.radio.channel_width_mhz
+    if width not in allowed_widths:
+        raise ValueError(
+            f"Ancho de canal {width} MHz incompatible con la banda "
+            f"{frequency_band.name} ({frequency_band.frequency_mhz:g} MHz); "
+            f"permitidos: {', '.join(str(w) for w in allowed_widths)} MHz."
         )
 
     points: list[Point2D] = list(sample_points or [])
@@ -129,6 +143,7 @@ def _compute_stats(evaluations: list[LinkEvaluation], project) -> dict:
         return {}
 
     rx_values = [e.rx_power_dbm for e in evaluations]
+    snr_values = [e.snr_db for e in evaluations]
     quality_counts: dict[str, int] = {}
     for evaluation in evaluations:
         key = evaluation.quality.value
@@ -136,6 +151,8 @@ def _compute_stats(evaluations: list[LinkEvaluation], project) -> dict:
 
     target = project.thresholds.rssi_target_dbm
     meets_count = sum(1 for e in evaluations if e.rssi_meets_target)
+    snr_target = project.thresholds.snr_target_db
+    snr_meets_count = sum(1 for e in evaluations if e.snr_meets_target)
     total = len(evaluations)
 
     # Porcentajes por clase. Denominador: puntos totales evaluados (grid).
@@ -154,4 +171,11 @@ def _compute_stats(evaluations: list[LinkEvaluation], project) -> dict:
         "rssi_target_dbm": target,
         "points_meeting_target": meets_count,
         "coverage_ratio": round(meets_count / total, 4),
+        # Fase 7: estadísticas de SNR (mismo ganador; sin promedios de AP).
+        "snr_min_db": min(snr_values),
+        "snr_max_db": max(snr_values),
+        "snr_avg_db": round(sum(snr_values) / total, 2),
+        "snr_target_db": snr_target,
+        "points_meeting_snr_target": snr_meets_count,
+        "snr_ratio": round(snr_meets_count / total, 4),
     }

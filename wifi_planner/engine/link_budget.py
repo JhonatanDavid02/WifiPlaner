@@ -1,4 +1,4 @@
-"""Presupuesto de enlace (link budget) y SOM.
+"""Presupuesto de enlace (link budget), SOM y SNR.
 
 Fórmula canónica V1:
 
@@ -6,12 +6,16 @@ Fórmula canónica V1:
 
     SOM  = P_rx - Sensibilidad
 
+    SNR  = P_rx - Noise Floor          (Fase 7)
+
 Donde:
 - L_m (fade margin) es configurable; por defecto 10 dB (decisión B).
   Usar 0 dB para reproducir el comportamiento de las versiones legacy
   v3/v4 que omitían el margen.
 - L_obstacles proviene del trazado de paredes (Fase 2: trace_walls)
   o es 0.0 si no hay obstáculos / no se pasa obstacle_loss.
+- Noise Floor (piso de ruido) es configurable por radio; por defecto
+  -95 dBm (Fase 7). El SNR COMPLEMENTA a RSSI/SOM: no los reemplaza.
 
 Ninguna fórmula vive en la UI.
 """
@@ -103,6 +107,19 @@ def system_operating_margin(rx_power_dbm: float, sensitivity_dbm: float) -> floa
     return round(rx_power_dbm - sensitivity_dbm, 2)
 
 
+def signal_to_noise_ratio(rx_power_dbm: float, noise_floor_dbm: float) -> float:
+    """SNR = P_rx - piso de ruido, en dB (2 decimales, Fase 7).
+
+    Args:
+        rx_power_dbm: Potencia recibida (RSSI) en dBm.
+        noise_floor_dbm: Piso de ruido configurado en dBm.
+
+    Returns:
+        SNR en dB.
+    """
+    return round(rx_power_dbm - noise_floor_dbm, 2)
+
+
 def evaluate_link(
     radio: RadioConfiguration,
     access_point_id: str,
@@ -131,8 +148,8 @@ def evaluate_link(
             lo aporta engine.obstacles.trace_walls.
 
     Returns:
-        LinkEvaluation con distancias, pérdidas, P_rx, SOM, veredicto
-        y clase de calidad.
+        LinkEvaluation con distancias, pérdidas, P_rx, SOM, SNR,
+        veredicto y clase de calidad.
     """
     if obstacle_loss is None:
         obstacle_loss = ObstacleLoss(total_db=0.0, crossings=0)
@@ -152,6 +169,10 @@ def evaluate_link(
     quality = classifier.classify_quality(budget.rx_power_dbm, thresholds)
     verdict = classifier.classify_som(budget.som_db, thresholds)
     meets = classifier.meets_rssi_target(budget.rx_power_dbm, thresholds)
+    # SNR (Fase 7): complementa a RSSI/SOM con el piso de ruido de la radio.
+    noise_floor = radio.noise_floor_dbm
+    snr = signal_to_noise_ratio(budget.rx_power_dbm, noise_floor)
+    snr_meets = classifier.meets_snr_target(snr, thresholds)
 
     return LinkEvaluation(
         access_point_id=access_point_id,
@@ -166,4 +187,7 @@ def evaluate_link(
         rssi_meets_target=meets,
         verdict=verdict,
         quality=quality,
+        noise_floor_dbm=noise_floor,
+        snr_db=snr,
+        snr_meets_target=snr_meets,
     )
