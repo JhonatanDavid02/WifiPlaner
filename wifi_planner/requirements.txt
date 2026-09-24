@@ -1,4 +1,6 @@
-# Dependencias del Wi-Fi Planner V1 (fundación)
-# El motor RF solo usa la estándar (math). YAML es para configuración central.
+# Dependencias del Wi-Fi Planner V1
+# Motor RF: solo stdlib. YAML: configuración. Pillow: preparado (heatmap futuro).
+# UI: Tkinter (stdlib de Python; en Debian/Ubuntu: python3-tk)
 pytest>=8.0
 PyYAML>=6.0
+Pillow>=10.0
