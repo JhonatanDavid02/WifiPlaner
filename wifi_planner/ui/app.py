@@ -11,7 +11,7 @@ from ui.coverage_renderer import build_heatmap_image
 from ui.dialogs import ProjectDimensionsDialog
 from ui.editor_canvas import EditorCanvas
 from ui.panels import PropertiesPanel, Toolbar
-from ui.session import EditorSession, Tool
+from ui.session import EditorSession, HEATMAP_ALL_APS, Tool
 from ui.viewport import Viewport
 
 # Debounce del heatmap (ms). El valor es configurable por instancia.
@@ -85,8 +85,10 @@ class WifiPlannerApp(tk.Tk):
             on_delete=self._on_delete,
             on_resolution=self._on_resolution,
             on_heatmap_toggle=self._on_heatmap_toggle,
+            on_heatmap_ap=self._on_heatmap_ap,
         )
         self.toolbar.pack(fill="x", padx=6, pady=(6, 2))
+        self._refresh_ap_selector()
 
         middle = ttk.Frame(self)
         middle.pack(fill="both", expand=True, padx=6, pady=2)
@@ -184,6 +186,29 @@ class WifiPlannerApp(tk.Tk):
             self.canvas.clear_heatmap()
             self.properties.show_heatmap_text("Heatmap desactivado.")
 
+    def _on_heatmap_ap(self, ap_ref: str) -> None:
+        """Selector de AP del heatmap: combinado (Todos) o individual."""
+        try:
+            self.session.set_heatmap_ap(ap_ref)
+        except KeyError as exc:
+            messagebox.showwarning("AP", str(exc), parent=self)
+            self._refresh_ap_selector()
+            return
+        self._refresh_ap_selector()
+        self._schedule_heatmap()
+
+    def _refresh_ap_selector(self) -> None:
+        """Sincroniza la combobox de AP con el modelo (etiquetas legibles)."""
+        ids = [c for c in self.session.ap_choices_for_heatmap() if c != HEATMAP_ALL_APS]
+        labels = ["Todos los AP"] + ids
+        if self.session.heatmap_ap_id == HEATMAP_ALL_APS:
+            current_label = "Todos los AP"
+        else:
+            current_label = self.session.heatmap_ap_id
+            if current_label not in labels:
+                current_label = "Todos los AP"
+        self.toolbar.set_ap_choices(labels, current=current_label)
+
     def _on_delete(self) -> None:
         if self.session.delete_selection():
             self.render_project()
@@ -259,6 +284,7 @@ class WifiPlannerApp(tk.Tk):
         self.render_project()
         self.properties.refresh()
         self.toolbar._tool_var.set(self.session.tool.value)
+        self._refresh_ap_selector()
         self._schedule_heatmap()
 
     # ------------------------------------------------------------------

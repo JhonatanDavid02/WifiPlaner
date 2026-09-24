@@ -1,11 +1,13 @@
 """Combinación de resultados de múltiples Access Points.
 
-Fase 1: estructura preparada. La UI podrá evaluar varios APs y
-combinar sus resultados (mejor señal por punto) sin que el motor
-dependa de la interfaz.
+Fase 5: fusión por punto con **mejor RSSI disponible** (cobertura).
+NO es interferencia (sin SINR, canal, ruido ni roaming).
 
-La fusión por punto (best-RSSI / best-SINR) se implementará en Fase 5
-cuando exista simulación sobre grid; aquí se deja la interfaz pública.
+Por cada coordenada (x, y) del grid se conserva la LinkEvaluation con
+mayor ``rx_power_dbm``. En empate exacto de RSSI gana el AP con menor
+``access_point_id`` lexicográfico (política determinista, decisión U).
+El ``access_point_id`` de la evaluación ganadora es el ``best_ap_id``.
+SOM / quality / veredicto son los del AP ganador (no se promedian).
 """
 
 from __future__ import annotations
@@ -13,19 +15,27 @@ from __future__ import annotations
 from core.result import LinkEvaluation, SimulationResult
 
 
+def _better(a: LinkEvaluation, b: LinkEvaluation) -> bool:
+    """True si ``a`` gana a ``b`` para el mismo punto de muestreo."""
+    if a.rx_power_dbm != b.rx_power_dbm:
+        return a.rx_power_dbm > b.rx_power_dbm
+    # Empate de RSSI → menor id estable (AP-001 antes que AP-002).
+    return a.access_point_id < b.access_point_id
+
+
 def combine_results(results: list[SimulationResult]) -> SimulationResult:
     """Combina varios SimulationResult (uno por AP) en uno solo.
 
     Estrategia V1: para cada punto se conserva la evaluación con
-    mayor P_rx (mejor señal). Esta es la base para futuras combinaciones
-    con interferencia (SINR) en fases posteriores.
+    mayor P_rx (mejor señal). Empates: menor ``access_point_id``.
 
     Args:
         results: Lista de SimulationResult (pueden ser de distinto AP
             pero deben compartir band_id; si no, se lanza ValueError).
 
     Returns:
-        SimulationResult combinado con evaluaciones fusionadas por punto.
+        SimulationResult combinado: una evaluación por punto (mejor AP),
+        con stats de cobertura + dominancia por AP.
 
     Raises:
         ValueError: si la lista está vacía o hay bandas distintas.
@@ -40,16 +50,38 @@ def combine_results(results: list[SimulationResult]) -> SimulationResult:
         )
 
     best_by_point: dict[tuple[float, float], LinkEvaluation] = {}
-    for result in results:
+    # Orden de recorrido estable: por id de AP de cada resultado.
+    ordered = sorted(
+        results,
+        key=lambda r: (
+            r.evaluations[0].access_point_id if r.evaluations else ""
+        ),
+    )
+    for result in ordered:
         for evaluation in result.evaluations:
             key = (evaluation.point.x, evaluation.point.y)
             current = best_by_point.get(key)
-            if current is None or evaluation.rx_power_dbm > current.rx_power_dbm:
+            if current is None or _better(evaluation, current):
                 best_by_point[key] = evaluation
 
-    evaluations = tuple(best_by_point.values())
+    # Mismo orden de puntos que el primer resultado de entrada (grid).
+    ordered_points = [
+        (e.point.x, e.point.y) for e in results[0].evaluations
+    ]
+    evaluations = tuple(
+        best_by_point[key] for key in ordered_points if key in best_by_point
+    )
+    # Puntos solo presentes en otros resultados (por si acaso)
+    seen = set(ordered_points)
+    for key, ev in best_by_point.items():
+        if key not in seen:
+            evaluations = evaluations + (ev,)
+            seen.add(key)
 
-    merged_stats = _merged_stats(results, evaluations)
+    all_ap_ids = sorted(
+        {e.access_point_id for r in results for e in r.evaluations}
+    )
+    merged_stats = _merged_stats(results, evaluations, all_ap_ids)
 
     return SimulationResult(
         project_name=results[0].project_name,
@@ -66,8 +98,9 @@ def combine_results(results: list[SimulationResult]) -> SimulationResult:
 def _merged_stats(
     results: list[SimulationResult],
     evaluations: tuple[LinkEvaluation, ...],
+    all_ap_ids: list[str],
 ) -> dict:
-    """Estadísticas del resultado combinado."""
+    """Estadísticas del resultado combinado (mismo contrato que F4)."""
     if not evaluations:
         return {}
 
@@ -79,15 +112,36 @@ def _merged_stats(
 
     meets_count = sum(1 for e in evaluations if e.rssi_meets_target)
     sample_target = results[0].stats.get("rssi_target_dbm", -67.0)
+    total = len(evaluations)
+
+    quality_percent = {
+        key: round(100.0 * count / total, 2)
+        for key, count in quality_counts.items()
+    }
+
+    # Dominancia: puntos cuyo best_ap_id es cada AP / total del grid.
+    dominance_counts = {ap_id: 0 for ap_id in all_ap_ids}
+    for evaluation in evaluations:
+        ap_id = evaluation.access_point_id
+        dominance_counts[ap_id] = dominance_counts.get(ap_id, 0) + 1
+    dominance_percent = {
+        ap_id: round(100.0 * count / total, 2)
+        for ap_id, count in dominance_counts.items()
+    }
 
     return {
-        "point_count": len(evaluations),
+        "point_count": total,
+        "total": total,
         "source_results": len(results),
+        "combined": len(results) > 1,
         "rx_min_dbm": min(rx_values),
         "rx_max_dbm": max(rx_values),
-        "rx_avg_dbm": round(sum(rx_values) / len(rx_values), 2),
+        "rx_avg_dbm": round(sum(rx_values) / total, 2),
         "quality_counts": quality_counts,
+        "quality_percent": quality_percent,
         "rssi_target_dbm": sample_target,
         "points_meeting_target": meets_count,
-        "coverage_ratio": round(meets_count / len(evaluations), 4),
+        "coverage_ratio": round(meets_count / total, 4),
+        "ap_dominance_counts": dominance_counts,
+        "ap_dominance_percent": dominance_percent,
     }

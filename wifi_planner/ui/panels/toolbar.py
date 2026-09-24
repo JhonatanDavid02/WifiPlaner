@@ -6,7 +6,7 @@ import tkinter as tk
 from tkinter import ttk
 from typing import Callable
 
-from ui.session import Tool
+from ui.session import HEATMAP_ALL_APS, Tool
 
 
 class Toolbar(ttk.Frame):
@@ -24,6 +24,7 @@ class Toolbar(ttk.Frame):
         on_delete: Callable[[], None],
         on_resolution: Callable[[float], None] | None = None,
         on_heatmap_toggle: Callable[[bool], None] | None = None,
+        on_heatmap_ap: Callable[[str], None] | None = None,
         **kwargs,
     ) -> None:
         super().__init__(master, **kwargs)
@@ -34,10 +35,13 @@ class Toolbar(ttk.Frame):
         self._on_delete = on_delete
         self._on_resolution = on_resolution or (lambda _r: None)
         self._on_heatmap_toggle = on_heatmap_toggle or (lambda _e: None)
+        self._on_heatmap_ap = on_heatmap_ap or (lambda _a: None)
         self._tool_var = tk.StringVar(value=Tool.SELECT.value)
         self._band_var = tk.StringVar(value="2.4 GHz")
         self._res_var = tk.StringVar(value="0.50")
         self._heatmap_var = tk.BooleanVar(value=True)
+        self._ap_var = tk.StringVar(value=HEATMAP_ALL_APS)
+        self._ap_combo = None
         self._build()
 
     def _build(self) -> None:
@@ -75,7 +79,18 @@ class Toolbar(ttk.Frame):
         band_combo.grid(row=0, column=7, **pad)
         band_combo.bind("<<ComboboxSelected>>", self._band_changed)
 
-        ttk.Label(self, text="Res.:").grid(row=0, column=8, **pad)
+        ttk.Label(self, text="AP:").grid(row=0, column=8, **pad)
+        self._ap_combo = ttk.Combobox(
+            self,
+            textvariable=self._ap_var,
+            values=[HEATMAP_ALL_APS],
+            state="readonly",
+            width=14,
+        )
+        self._ap_combo.grid(row=0, column=9, **pad)
+        self._ap_combo.bind("<<ComboboxSelected>>", self._ap_changed)
+
+        ttk.Label(self, text="Res.:").grid(row=0, column=10, **pad)
         res_combo = ttk.Combobox(
             self,
             textvariable=self._res_var,
@@ -83,7 +98,7 @@ class Toolbar(ttk.Frame):
             state="readonly",
             width=6,
         )
-        res_combo.grid(row=0, column=9, **pad)
+        res_combo.grid(row=0, column=11, **pad)
         res_combo.bind("<<ComboboxSelected>>", self._resolution_changed)
 
         ttk.Checkbutton(
@@ -91,18 +106,44 @@ class Toolbar(ttk.Frame):
             text="Heatmap",
             variable=self._heatmap_var,
             command=self._heatmap_changed,
-        ).grid(row=0, column=10, padx=4, pady=4)
+        ).grid(row=0, column=12, padx=4, pady=4)
 
         ttk.Button(self, text="Eliminar", command=self._on_delete).grid(
-            row=0, column=11, padx=4, pady=4
-        )
-        ttk.Button(self, text="Espacio…", command=self._on_dimensions).grid(
-            row=0, column=12, padx=4, pady=4
-        )
-        ttk.Button(self, text="Simular", command=self._on_simulate).grid(
             row=0, column=13, padx=4, pady=4
         )
-        self.columnconfigure(14, weight=1)
+        ttk.Button(self, text="Espacio…", command=self._on_dimensions).grid(
+            row=0, column=14, padx=4, pady=4
+        )
+        ttk.Button(self, text="Simular", command=self._on_simulate).grid(
+            row=0, column=15, padx=4, pady=4
+        )
+        self.columnconfigure(16, weight=1)
+
+    def set_ap_choices(self, choices: list[str], current: str | None = None) -> None:
+        """Actualiza el selector de AP.
+
+        ``choices`` son **etiquetas** visibles (p. ej. "Todos los AP", "AP-001").
+        El var interno guarda la etiqueta; ``get_selected_ap_id`` la mapea.
+        """
+        if self._ap_combo is None:
+            return
+        if not choices:
+            choices = ["Todos los AP"]
+        self._ap_combo["values"] = list(choices)
+        value = current if current is not None else self._ap_var.get()
+        if value in choices:
+            self._ap_var.set(value)
+        elif value == HEATMAP_ALL_APS:
+            self._ap_var.set("Todos los AP")
+        else:
+            self._ap_var.set(choices[0])
+
+    def get_selected_ap_id(self) -> str:
+        """Devuelve el id interno del AP seleccionado (o HEATMAP_ALL_APS)."""
+        shown = self._ap_var.get()
+        if shown in ("Todos los AP", HEATMAP_ALL_APS, ""):
+            return HEATMAP_ALL_APS
+        return shown
 
     def _tool_changed(self) -> None:
         self._on_tool(Tool(self._tool_var.get()))
@@ -111,6 +152,9 @@ class Toolbar(ttk.Frame):
         label = self._band_var.get()
         mapping = {"2.4 GHz": "band_2_4", "5 GHz": "band_5", "6 GHz": "band_6"}
         self._on_band(mapping.get(label, "band_2_4"))
+
+    def _ap_changed(self, _event=None) -> None:
+        self._on_heatmap_ap(self.get_selected_ap_id())
 
     def _resolution_changed(self, _event=None) -> None:
         try:

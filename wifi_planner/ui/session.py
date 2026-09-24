@@ -18,8 +18,12 @@ from core.project import Project
 from core.result import SimulationResult
 from core.space import Floor
 from core.wall import Wall
+from engine.combine import combine_results
 from engine.coverage_grid import CoverageGrid
 from engine.simulator import simulate_coverage
+
+# Selector de heatmap: todos los APs (cobertura combinada, Fase 5).
+HEATMAP_ALL_APS = "__all__"
 
 
 class Tool(str, Enum):
@@ -97,6 +101,8 @@ class EditorSession:
         # Fase 4: heatmap espacial
         self.grid_resolution_m: float = 0.5
         self.heatmap_enabled: bool = True
+        # Fase 5: HEATMAP_ALL_APS (combinado) o id de un AP concreto.
+        self.heatmap_ap_id: str = HEATMAP_ALL_APS
         self.last_heatmap: SimulationResult | None = None
         self.last_heatmap_error: str | None = None
         self.heatmap_dirty: bool = True
@@ -166,6 +172,29 @@ class EditorSession:
             resolution_m=self.grid_resolution_m,
         )
 
+    def set_heatmap_ap(self, ap_id: str | None) -> None:
+        """Selector del heatmap: ``HEATMAP_ALL_APS`` o un id de AP concreto.
+
+        Invalida el heatmap al cambiar el ámbito (combinado ↔ individual).
+        """
+        if ap_id is None or ap_id == HEATMAP_ALL_APS:
+            new_id = HEATMAP_ALL_APS
+        else:
+            # Debe existir en el proyecto
+            found = any(ap.id == ap_id for ap in self.project.access_points)
+            if not found:
+                raise KeyError(f"Access Point no encontrado: {ap_id}")
+            new_id = ap_id
+        if new_id != self.heatmap_ap_id:
+            self.heatmap_ap_id = new_id
+            self.invalidate_heatmap()
+
+    def ap_choices_for_heatmap(self) -> list[str]:
+        """Valores del selector de AP en la toolbar (todos + ids)."""
+        choices = [HEATMAP_ALL_APS]
+        choices += [ap.id for ap in self.project.access_points]
+        return choices
+
     def resolve_ap_for_heatmap(self) -> AccessPoint | None:
         """AP seleccionado o el primero del proyecto (comportamiento Fase 3/4)."""
         ap = self.selected_ap()
@@ -173,10 +202,28 @@ class EditorSession:
             return self.project.access_points[0]
         return ap
 
-    def run_heatmap(self, band_id: str | None = None) -> SimulationResult:
-        """Simula el CoverageGrid completo con las paredes reales.
+    def resolve_aps_for_heatmap(self) -> list[AccessPoint]:
+        """APs a evaluar en el heatmap actual.
 
-        Un solo AP (seleccionado o el primero). No combina múltiples APs.
+        - ``HEATMAP_ALL_APS``: todos los APs del proyecto (orden estable).
+        - id concreto: solo ese AP (F4 / vista individual).
+        """
+        aps = list(self.project.access_points)
+        if self.heatmap_ap_id == HEATMAP_ALL_APS:
+            return aps
+        for ap in aps:
+            if ap.id == self.heatmap_ap_id:
+                return [ap]
+        # AP del selector ya no existe → todos (o el primero si solo queda)
+        return aps
+
+    def run_heatmap(self, band_id: str | None = None) -> SimulationResult:
+        """Simula el CoverageGrid con las paredes reales.
+
+        Fase 5: si el selector es ``HEATMAP_ALL_APS`` y hay N > 1 APs,
+        evalúa el **mismo grid** para cada AP con ``simulate_coverage``
+        y fusiona con ``combine_results`` (mejor RSSI por punto; no es
+        interferencia). Con 0 o 1 AP el comportamiento es el de Fase 4.
 
         Raises:
             ValueError: si no hay AP o el grid es inválido.
@@ -186,19 +233,27 @@ class EditorSession:
         self.band_id = band_id
         self.last_heatmap_error = None
 
-        ap = self.resolve_ap_for_heatmap()
-        if ap is None:
+        aps = self.resolve_aps_for_heatmap()
+        if not aps:
             raise ValueError("Coloca al menos un Access Point para el heatmap.")
 
         band = self.project.get_band(band_id)
         grid = self.build_coverage_grid()
-        result = simulate_coverage(
-            project=self.project,
-            access_point=ap,
-            frequency_band=band,
-            sample_points=grid.points(),
-            walls=self.floor.walls,
-        )
+        points = grid.points()
+
+        results: list[SimulationResult] = []
+        for ap in aps:
+            results.append(
+                simulate_coverage(
+                    project=self.project,
+                    access_point=ap,
+                    frequency_band=band,
+                    sample_points=points,
+                    walls=self.floor.walls,
+                )
+            )
+
+        result = results[0] if len(results) == 1 else combine_results(results)
         self.last_heatmap = result
         self.heatmap_dirty = False
         return result
@@ -212,9 +267,13 @@ class EditorSession:
         from ui.coverage_renderer import stats_text
 
         band = self.project.get_band(self.last_heatmap.band_id)
-        ap = self.resolve_ap_for_heatmap()
+        if self.heatmap_ap_id == HEATMAP_ALL_APS:
+            n = len(self.project.access_points)
+            ap_label = f"Todos los AP ({n})" if n != 1 else "Todos los AP (1)"
+        else:
+            ap_label = self.heatmap_ap_id
         header = (
-            f"AP: {ap.id if ap else '—'}\n"
+            f"AP: {ap_label}\n"
             f"Banda: {band.name}\n"
             f"Resolución: {self.grid_resolution_m:g} m\n\n"
         )
@@ -403,6 +462,9 @@ class EditorSession:
                 if ap.id == entity_id:
                     del self.project.access_points[index]
                     self.selection = None
+                    # Si el heatmap apuntaba a ese AP, volver a combinado.
+                    if self.heatmap_ap_id == entity_id:
+                        self.heatmap_ap_id = HEATMAP_ALL_APS
                     self.invalidate_heatmap()
                     return True
         elif kind == SelectionKind.CLIENT:

@@ -6,9 +6,11 @@ Wi-Fi Planner es un sistema de diseño y simulación visual de redes Wi-Fi.
 La V1 establece la **fundación**: dominio, geometría en metros, motor RF
 centralizado, configuración centralizada, pruebas y documentación.
 
-**Fase 4 (actual):** editor 2D + **heatmap de cobertura** sobre
-`CoverageGrid`. El heatmap es una **estimación predictiva** del modelo
-configurado; no es una simulación electromagnética completa.
+**Fase 5 (actual):** editor 2D + **heatmap multi-AP** sobre el mismo
+`CoverageGrid`. Cada AP se evalúa con `simulate_coverage` y se combinan
+con `combine_results` (mejor RSSI por punto; **no** es interferencia).
+El heatmap es una **estimación predictiva** del modelo configurado;
+no es una simulación electromagnética completa.
 
 ## Separación de capas
 
@@ -137,14 +139,21 @@ trace_walls(source, target, walls, band_id) -> ObstacleTraceResult
 - Total: `attenuation_db = Σ loss_db` (redondeado a 2 decimales).
 - Determinista: empates de distancia se rompen por `wall.id`.
 
-### Heatmap (Fase 4)
+### Heatmap (Fase 4–5)
 
-- **UN solo AP** por heatmap (seleccionado o primero).
-- Invalidación + debounce ~150 ms al mover AP / cambiar banda /
-  pared / dimensión / resolución.
+- **Fase 5:** selector `AP:` en toolbar → `Todos los AP` (combinado) o
+  un AP individual. El combinado itera `simulate_coverage` sobre el
+  **mismo** `CoverageGrid` y fusiona con `combine_results` (mejor RSSI
+  por punto; empate → menor `access_point_id`).
+- Invalidación + debounce ~150 ms (F4) reutilizada en F5: mover AP,
+  banda, pared, dimensión, resolución, agregar/eliminar AP, cambiar
+  selector de AP.
 - `%` de cobertura: denominador = **puntos totales del grid**.
+- Dominancia (`ap_dominance_percent`): puntos dominados por cada AP ÷
+  total (suma ≈ 100 %).
 - Disclaimer: estimación predictiva, no simulación EM.
 - 6 GHz: error visible (`MaterialAttenuationError`), sin fallback.
+- **No** hay interferencia, SINR, roaming ni optimización de canales.
 
 ## Unidades
 
@@ -165,7 +174,8 @@ Los píxeles **no existen** en `core/` ni `engine/`.
 - **Fase 2 (hecha):** trazado rayo-pared + `L_obstacles` real.
 - **Fase 3 (hecha):** editor 2D Tkinter.
 - **Fase 4 (hecha):** `CoverageGrid` + heatmap + leyenda + stats.
-- **Fase 5:** `combine_results` fusiona múltiples AP en el heatmap.
+- **Fase 5 (hecha):** multi-AP — mismo grid, `combine_results`,
+  selector Todos/AP, dominancia por AP, estadísticas combinadas.
 - **Fase 6:** persistencia de `Project` (JSON/YAML).
 - **Futuro 3D:** `Floor.elevation_m` ya existe; geometría 2D no cambia.
 - **Openings / huecos:** atenuación diferenciada en fase posterior.

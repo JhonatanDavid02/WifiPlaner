@@ -260,6 +260,79 @@ discrepancia se resolvió de forma silenciosa.
 
 ---
 
+## Decisiones Fase 5 (multi-AP y cobertura combinada)
+
+### Decisión U — Combinación multi-AP = mejor RSSI por punto (no interferencia)
+
+- **Decisión:** para cada punto del **mismo** `CoverageGrid`, el heatmap
+  combinado (`HEATMAP_ALL_APS`) evalúa **todos** los APs con
+  `simulate_coverage` y fusiona con `combine_results`: gana el mayor
+  `rx_power_dbm`. **No** se modela interferencia (sin SINR, canal,
+  ruido, roaming ni handoff).
+- **Razón:** la combinación representa **cobertura disponible**. La
+  interferencia es una fase futura; inventar fórmulas de SINR en V1
+  sería incorrecto.
+
+### Decisión V — Empates deterministas por `access_point_id`
+
+- **Decisión:** si dos (o más) APs dan el **mismo** RSSI exacto en un
+  punto, gana el `access_point_id` **menor** en orden lexicográfico
+  (p. ej. `AP-001` antes que `AP-002`). La política vive en
+  `engine.combine._better` y no depende del orden de llegada de un
+  diccionario.
+- **Razón:** reproducibilidad total ante empates (misma entrada →
+  misma salida en cualquier orden de iteración).
+
+### Decisión W — SOM / quality / veredicto = los del AP ganador
+
+- **Decisión:** el resultado combinado **no** promedia SOM ni RSSI de
+  varios APs. El punto toma **completo** la `LinkEvaluation` del AP con
+  mejor RSSI (su distancia, su `path_loss`, su `obstacle_loss`, su SOM,
+  su quality y su veredicto). El `access_point_id` de esa evaluación es
+  el `best_ap_id` del punto.
+- **Razón:** los clasificadores (calidad, SOM) son la autoridad y solo
+  tienen sentido relativos a un enlace real AP→punto. Promediar SOM
+  entre APs no tiene significado físico en este modelo.
+
+### Decisión X — Mismo grid para todos los APs
+
+- **Decisión:** todos los APs se evalúan sobre **una sola** lista de
+  puntos (`CoverageGrid.points()` generada una vez). No se crea un
+  grid por AP ni se re-muestrea.
+- **Razón:** la correspondencia espacial punto↔punto debe ser exacta
+  para poder elegir el mejor RSSI por coordenada.
+
+### Decisión Y — Selector de AP en la UI
+
+- **Decisión:** la toolbar expone un combo `AP:` con
+  `Todos los AP` + `AP-001`, `AP-002`, …
+  - **Todos los AP** → heatmap combinado (mejor RSSI por punto).
+  - **AP-xxx** → heatmap exclusivamente de ese AP (reutiliza el mismo
+    `CoverageGrid`, `simulate_coverage`, renderer y stats de F4).
+- **Razón:** reutiliza la pila de F4 sin crear un segundo renderer ni
+  un segundo motor. El valor interno es `HEATMAP_ALL_APS` o el id.
+
+### Decisión Z — Dominancia por AP en estadísticas
+
+- **Decisión:** el resultado combinado incluye en `stats`:
+  - `ap_dominance_counts`: `{ap_id: puntos donde es el mejor}`
+  - `ap_dominance_percent`: mismos conteos ÷ puntos totales del grid
+  La suma de porcentajes ≈ 100 % (redondeo a 2 decimales). Se muestra
+  en el panel de estadísticas del heatmap.
+- **Razón:** permite ver qué AP “cubre” cada zona sin añadir una capa
+  visual compleja (el heatmap sigue siendo de RSSI).
+
+### Decisión AA — Invalidación multi-AP reutiliza la de F4
+
+- **Decisión:** el sistema `heatmap_dirty` + debounce ~150 ms de F4 se
+  extiende a F5: agregar/eliminar AP, cambiar el selector de AP, mover
+  un AP, cambiar banda/resolución/paredes/dimensiones → invalidación
+  → recálculo. **No** hay un segundo mecanismo de invalidación.
+- **Razón:** un solo camino de frescura de datos; menos superficie de
+  bugs.
+
+---
+
 ## Discrepancias encontradas (no resueltas silenciosamente)
 
 ### 1. Distancias `d_max` contradictorias

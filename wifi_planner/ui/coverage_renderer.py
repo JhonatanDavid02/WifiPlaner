@@ -186,7 +186,11 @@ def _infer_cell_size(evaluations: Sequence) -> float:
 
 
 def stats_text(result: SimulationResult) -> str:
-    """Estadísticas básicas. Denominador de %: puntos totales del grid."""
+    """Estadísticas básicas. Denominador de %: puntos totales del grid.
+
+    Si el resultado es combinado (Fase 5), añade dominancia por AP
+    (puntos dominados / total) cuando ``ap_dominance_percent`` existe.
+    """
     stats = result.stats or {}
     n = stats.get("point_count", len(result.evaluations))
     if not n:
@@ -212,6 +216,17 @@ def stats_text(result: SimulationResult) -> str:
         count = int(quality_counts.get(label, 0))
         pct = 100.0 * count / n
         lines.append(f"  {label}: {pct:.1f}% ({count})")
+
+    # Fase 5: dominancia del AP mejor en cada punto (cobertura combinada).
+    dominance = stats.get("ap_dominance_percent") or {}
+    counts = stats.get("ap_dominance_counts") or {}
+    if dominance:
+        lines.append("")
+        lines.append("AP dominante (mejor RSSI por punto):")
+        for ap_id in sorted(dominance.keys()):
+            pct = dominance[ap_id]
+            count = int(counts.get(ap_id, 0))
+            lines.append(f"  {ap_id}: {pct:.1f}% ({count})")
     return "\n".join(lines)
 
 
