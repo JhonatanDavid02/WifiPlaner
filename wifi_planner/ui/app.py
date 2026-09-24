@@ -1,21 +1,29 @@
-"""Ventana principal de Wi-Fi Planner (Fase 4: editor + heatmap)."""
+"""Ventana principal de Wi-Fi Planner (Fase 6: editor + heatmap + archivos)."""
 
 from __future__ import annotations
 
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 
 from core.material import MaterialAttenuationError
+from persistence import ProjectFormatError
 from ui import theme
 from ui.coverage_renderer import build_heatmap_image
 from ui.dialogs import ProjectDimensionsDialog
 from ui.editor_canvas import EditorCanvas
 from ui.panels import PropertiesPanel, Toolbar
+from ui.panels.toolbar import BAND_LABEL_BY_ID
 from ui.session import EditorSession, HEATMAP_ALL_APS, Tool
 from ui.viewport import Viewport
 
 # Debounce del heatmap (ms). El valor es configurable por instancia.
 HEATMAP_DEBOUNCE_MS = 150
+
+# Filtros del diálogo de archivos de proyecto.
+FILE_TYPES = [
+    ("Proyecto Wi-Fi Planner", "*.json"),
+    ("Todos los archivos", "*.*"),
+]
 
 
 class WifiPlannerApp(tk.Tk):
@@ -41,12 +49,138 @@ class WifiPlannerApp(tk.Tk):
         self._heatmap_after_id = None
 
         self._apply_theme()
+        self._build_menu()
         self._build_layout()
         self._bind_keys()
+        self._update_title()
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.after(50, self._initial_render)
         self.after(80, self._schedule_heatmap)
+
+    # ------------------------------------------------------------------
+    # Menú Archivo (Fase 6: persistencia local)
+    # ------------------------------------------------------------------
+
+    def _build_menu(self) -> None:
+        menubar = tk.Menu(self)
+        file_menu = tk.Menu(menubar, tearoff=0)
+        file_menu.add_command(
+            label="Nuevo", accelerator="Ctrl+N", command=self._on_file_new
+        )
+        file_menu.add_command(
+            label="Abrir…", accelerator="Ctrl+O", command=self._on_file_open
+        )
+        file_menu.add_separator()
+        file_menu.add_command(
+            label="Guardar", accelerator="Ctrl+S", command=self._on_file_save
+        )
+        file_menu.add_command(
+            label="Guardar como…",
+            accelerator="Ctrl+Shift+S",
+            command=self._on_file_save_as,
+        )
+        file_menu.add_separator()
+        file_menu.add_command(label="Salir", command=self._on_close)
+        menubar.add_cascade(label="Archivo", menu=file_menu)
+        self.config(menu=menubar)
+
+    def _on_file_new(self) -> None:
+        if not self._confirm_discard_changes():
+            return
+        self.session.new_project()
+        self._after_document_change()
+
+    def _on_file_open(self) -> None:
+        if not self._confirm_discard_changes():
+            return
+        path = filedialog.askopenfilename(
+            parent=self,
+            title="Abrir proyecto",
+            filetypes=FILE_TYPES,
+        )
+        if not path:
+            return
+        try:
+            self.session.open_project(path)
+        except (ProjectFormatError, OSError) as exc:
+            # El proyecto actual queda intacto (open_project es atómico).
+            messagebox.showerror("Abrir proyecto", str(exc), parent=self)
+            return
+        self._after_document_change()
+
+    def _on_file_save(self) -> None:
+        self._save_interactive()
+
+    def _on_file_save_as(self) -> None:
+        self._save_as_interactive()
+
+    def _confirm_discard_changes(self) -> bool:
+        """True si el usuario permite continuar (guardó o descartó)."""
+        if not self.session.dirty:
+            return True
+        answer = messagebox.askyesnocancel(
+            "Cambios sin guardar",
+            "El proyecto tiene cambios sin guardar.\n¿Desea guardarlos?",
+            parent=self,
+        )
+        if answer is None:
+            return False
+        if answer:
+            return self._save_interactive()
+        return True
+
+    def _save_interactive(self) -> bool:
+        """Guarda en la ruta actual (o pide ruta). True si se guardó."""
+        if self.session.project_path is None:
+            return self._save_as_interactive()
+        try:
+            self.session.save_project()
+        except (ProjectFormatError, OSError) as exc:
+            messagebox.showerror("Guardar proyecto", str(exc), parent=self)
+            return False
+        self._update_title()
+        return True
+
+    def _save_as_interactive(self) -> bool:
+        """Pide ruta y guarda. True si el usuario completó la guarda."""
+        path = filedialog.asksaveasfilename(
+            parent=self,
+            title="Guardar proyecto como",
+            defaultextension=".json",
+            filetypes=FILE_TYPES,
+        )
+        if not path:
+            return False
+        try:
+            self.session.save_project_as(path)
+        except (ProjectFormatError, OSError) as exc:
+            messagebox.showerror("Guardar proyecto", str(exc), parent=self)
+            return False
+        self._update_title()
+        return True
+
+    def _after_document_change(self) -> None:
+        """Reajusta la UI tras cargar/crear un proyecto (sin estado parcial)."""
+        self.viewport.set_world_size(
+            self.session.floor_width_m, self.session.floor_height_m
+        )
+        self.toolbar.set_band_label(
+            BAND_LABEL_BY_ID.get(self.session.band_id, "2.4 GHz")
+        )
+        self.toolbar.set_resolution_value(self.session.grid_resolution_m)
+        self.toolbar.set_heatmap_enabled(self.session.heatmap_enabled)
+        self.toolbar._tool_var.set(self.session.tool.value)
+        self._refresh_ap_selector()
+        self.properties.refresh()
+        self.render_project()
+        self._update_status_coords(None, None)
+        self._update_title()
+        self._schedule_heatmap()
+
+    def _update_title(self) -> None:
+        dirty = " *" if self.session.dirty else ""
+        self.title(f"{self.session.project.name}{dirty}")
 
     # ------------------------------------------------------------------
     # Layout
@@ -121,10 +255,19 @@ class WifiPlannerApp(tk.Tk):
     def _bind_keys(self) -> None:
         self.bind("<Escape>", self._on_escape)
 
+        # Atajos de archivo (menú Archivo).
+        self.bind("<Control-n>", lambda _e: self._on_file_new())
+        self.bind("<Control-o>", lambda _e: self._on_file_open())
+        self.bind("<Control-s>", lambda _e: self._on_file_save())
+        self.bind("<Control-Shift-S>", lambda _e: self._on_file_save_as())
+
         def make_tool_handler(tool: Tool):
             def handler(event):
                 widget = event.widget
                 if isinstance(widget, (tk.Entry, tk.Text, ttk.Entry, ttk.Combobox)):
+                    return None
+                # Ctrl (+ Shift): no robar Ctrl+S / Ctrl+N / Ctrl+O.
+                if event.state & 0x0004:
                     return None
                 self._set_tool(tool)
                 return "break"
@@ -145,6 +288,8 @@ class WifiPlannerApp(tk.Tk):
         self.properties.refresh()
 
     def _on_close(self) -> None:
+        if not self._confirm_discard_changes():
+            return
         if self._heatmap_after_id is not None:
             try:
                 self.after_cancel(self._heatmap_after_id)
@@ -168,6 +313,7 @@ class WifiPlannerApp(tk.Tk):
 
     def _on_band(self, band_id: str) -> None:
         self.session.set_band(band_id)  # invalida heatmap si cambió
+        self._update_title()
         self._schedule_heatmap()
 
     def _on_resolution(self, resolution_m: float) -> None:
@@ -176,6 +322,7 @@ class WifiPlannerApp(tk.Tk):
         except ValueError as exc:
             messagebox.showwarning("Resolución", str(exc), parent=self)
             return
+        self._update_title()
         self._schedule_heatmap()
 
     def _on_heatmap_toggle(self, enabled: bool) -> None:
@@ -221,6 +368,7 @@ class WifiPlannerApp(tk.Tk):
             self.viewport.set_world_size(w, h)
             self.render_project()
             self._update_status_coords(None, None)
+            self._update_title()
             self._schedule_heatmap()
 
         ProjectDimensionsDialog(
@@ -285,6 +433,7 @@ class WifiPlannerApp(tk.Tk):
         self.properties.refresh()
         self.toolbar._tool_var.set(self.session.tool.value)
         self._refresh_ap_selector()
+        self._update_title()
         self._schedule_heatmap()
 
     # ------------------------------------------------------------------

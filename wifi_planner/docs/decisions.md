@@ -333,6 +333,113 @@ discrepancia se resolvió de forma silenciosa.
 
 ---
 
+## Fase 6 — Persistencia local
+
+### Decisión AB — JSON local como representación externa del proyecto
+
+- **Decisión:** la persistencia local utiliza **JSON** como
+  representación externa del estado editable del proyecto. La
+  simulación y el estado visual de la UI se **reconstruyen** a partir
+  del proyecto: `JSON → Project → simulate → SimulationResult → UI`.
+- **Razón:** legible, portable, versionable y sin dependencias extra.
+  `Project` sigue siendo la única fuente de verdad; el archivo no
+  guarda nada que pueda recalcularse.
+
+### Decisión AC — Capa nueva `persistence/` (extensión 🟢)
+
+- **Decisión:** la serialización vive en una capa propia
+  (`persistence/`), no en `core/`, `engine/` ni en la UI.
+  `core/` y `engine/` **no importan** `persistence/`; la UI solo pide
+  “guardar/abrir” a `EditorSession`.
+- **Problema actual:** no existía serialización; ponerla en la UI
+  habría mezclado formato con presentación, y en `core/` habría
+  acoplado el dominio a un archivo.
+- **Beneficio:** el formato es reemplazable (Database/API/Cloud) sin
+  tocar dominio ni motor; testable sin Tkinter.
+- **Riesgo/alternativas descartadas:** `to_dict`/`from_dict` en cada
+  entidad de `core/` (extiende el formato por 10 archivos) y
+  serialización en `ui/` (contamina la presentación).
+
+### Decisión AD — Documento autocontenido
+
+- **Decisión:** el archivo guarda bandas, materiales, radio, umbrales,
+  pisos, paredes, APs y clientes **del propio proyecto** (no hace
+  falta `config/default_config.yaml` para abrirlo).
+- **Razón:** si la configuración por defecto cambia después, un
+  proyecto guardado sigue abriendo y simulando igual (round-trip
+  determinista). Las paredes referencian materiales por
+  `material_id` dentro de ese mismo catálogo (una sola tabla).
+
+### Decisión AE — Coordenadas en metros
+
+- **Decisión:** todas las coordenadas persistidas usan `x_m` / `y_m`
+  en **metros**. La conversión metros ↔ píxeles sigue siendo
+  responsabilidad exclusiva de `Viewport`.
+- **Razón:** el archivo describe el dominio, no la pantalla; así se
+  mantiene portabilidad entre resoluciones/monitores.
+
+### Decisión AF — `schema_version` obligatoria
+
+- **Decisión:** todo documento incluye `"schema_version": 1`. Una
+  versión distinta (ausente, no entera o mayor) ⇒ `ProjectFormatError`
+  con mensaje claro: no se carga nada parcial ni se sobrescribe el
+  proyecto en memoria. **No** hay sistema de migraciones todavía.
+- **Razón:** permite evolucionar a v2/v3 sin romper en silencio.
+
+### Decisión AG — Qué se persiste y qué no
+
+- **Se persiste:** `Project` completo (nombre, unidades, bandas,
+  materiales, radio, umbrales, floors + dimensiones + paredes, APs,
+  clientes, metadata) y `EditorState` (banda activa y resolución del
+  grid) en una sección `editor` separada.
+- **No se persiste:** selección, herramienta, heatmap visible,
+  selector de AP, debounce, callbacks, coordenadas en píxeles,
+  imágenes ni `SimulationResult`.
+- **Razón:** esos son estado de UI/temporal; se regeneran al abrir.
+  `SimulationResult` es derivado, jamás fuente de verdad.
+
+### Decisión AH — Escritura atómica + revalidación previa
+
+- **Decisión:** `save_project` revalida el documento completo antes de
+  escribir y usa archivo temporal (`.tmp`) + `os.replace`. Si algo
+  falla, el archivo anterior queda intacto y el temporal se elimina.
+- **Razón:** nunca dejar en disco un proyecto que la propia aplicación
+  no podría abrir; los fallos de escritura no destruyen datos.
+
+### Decisión AI — El JSON es entrada no confiable
+
+- **Decisión:** al abrir se valida: `schema_version`, secciones
+  obligatorios, tipos, números finitos (sin NaN/Inf), dimensiones
+  (0 < v ≤ 10 000 m), coordenadas (|v| ≤ 100 000 m), espesores
+  (0 < t ≤ 10 m), ids no vacíos/únicos/duplicados, material
+  referenciado existente, banda del `editor` existente, resolución que
+  produzca un grid usable, listas dentro de límites y tamaño máximo de
+  archivo (20 MB).
+- **Razón:** un archivo dañado produce un error comprensible, nunca un
+  estado parcial ni un cuelgue.
+
+### Decisión AJ — Dirty state en `EditorSession`
+
+- **Decisión:** `session.dirty` (False al abrir/guardar/nuevo) se
+  marca en mutaciones de modelo o configuración persistible (mover/
+  crear/eliminar pared, AP o cliente; material/espesor; dimensiones;
+  banda; resolución) y **no** en acciones visuales (selección,
+  herramienta, toggle heatmap, selector de AP, simular).
+- **Razón:** el prompt “¿Desea guardar los cambios?” solo aparece
+  cuando hay pérdidas reales posible.
+
+### Decisión AK — Ámbito del formato v1
+
+- **Decisión:** v1 serializa: `floors` (id, nombre, nivel, dimensiones,
+  elevación, metadata, `walls`), `access_points`, `clients`, catálogos
+  y configuración. **No** serializa aún `spaces`, `openings` y
+  `obstacles` de `Floor`: el editor actual no los crea ni los edita.
+- **Razón:** no persistir estructuras sin productor/consumidor evita
+  formatos inventados; si el editor las incorpora, el esquema crece a
+  v2 con esos campos (documentado como pendiente real).
+
+---
+
 ## Discrepancias encontradas (no resueltas silenciosamente)
 
 ### 1. Distancias `d_max` contradictorias

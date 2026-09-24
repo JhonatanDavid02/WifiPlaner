@@ -6,7 +6,12 @@ Wi-Fi Planner es un sistema de diseño y simulación visual de redes Wi-Fi.
 La V1 establece la **fundación**: dominio, geometría en metros, motor RF
 centralizado, configuración centralizada, pruebas y documentación.
 
-**Fase 5 (actual):** editor 2D + **heatmap multi-AP** sobre el mismo
+**Fase 6 (actual):** persistencia local de proyectos en **JSON**.
+El `Project` es la única fuente de verdad editable: se guarda a archivo
+y se regenera todo lo derivado (simulación, heatmap, UI) al abrir.
+La nueva capa `persistence/` aísla el formato del dominio y de la UI.
+
+**Fase 5:** editor 2D + **heatmap multi-AP** sobre el mismo
 `CoverageGrid`. Cada AP se evalúa con `simulate_coverage` y se combinan
 con `combine_results` (mejor RSSI por punto; **no** es interferencia).
 El heatmap es una **estimación predictiva** del modelo configurado;
@@ -16,11 +21,19 @@ no es una simulación electromagnética completa.
 
 ```
 ┌─────────────────────────────────────────────┐
-│  UI (Fase 3–4)                              │
+│  UI (Fase 3–6)                              │
 │  editor 2D (Tkinter), heatmap (Pillow),     │
-│  viewport (metros→píxeles), paneles         │
+│  viewport (metros→píxeles), paneles,        │
+│  menú Archivo (Nuevo/Abrir/Guardar)         │
 │  CONSUME SimulationResult / LinkEvaluation  │
+│  NUNCA serializa el proyecto por su cuenta  │
 │  NUNCA contiene fórmulas de RF              │
+├─────────────────────────────────────────────┤
+│  persistence/  (Fase 6)                    │
+│  Project ↔ JSON (schema_version), validación│
+│  de entrada no confiable, escritura atómica │
+│  Importa core/ (+ engine solo para validar  │
+│  límites del grid). NO importa UI           │
 ├─────────────────────────────────────────────┤
 │  engine/  (motor RF)                       │
 │  propagation, link_budget, classifier,      │
@@ -34,7 +47,7 @@ no es una simulación electromagnética completa.
 │  band, radio, access_point, client,         │
 │  project, result                            │
 │  NO contiene fórmulas de RF                │
-│  NO importa UI                             │
+│  NO importa UI ni persistence              │
 ├─────────────────────────────────────────────┤
 │  config/  (configuración central)          │
 │  default_config.yaml: umbrales, radios,     │
@@ -80,19 +93,30 @@ devuelven resultados. **La UI solo consume estos resultados.**
 | `simulator.py` | `simulate_coverage` — un punto o el grid completo |
 | `combine.py` | Combinación de resultados multi-AP (Fase 5) |
 
-### `ui/` (Fase 3–4)
+### `ui/` (Fase 3–6)
 Presentación. Sin fórmulas RF; solo pintar, capturar eventos y llamar
 al engine / `EditorSession`.
 
 | Módulo | Responsabilidad |
 |---|---|
-| `session.py` | `EditorSession`: operaciones puras sobre `Project` (testeable sin Tk) |
+| `session.py` | `EditorSession`: operaciones puras sobre `Project` (testeable sin Tk): editor + guardar/abrir/nuevo + dirty state |
 | `viewport.py` | **Único** conversor metros ↔ píxeles (escala isotrópica) |
 | `editor_canvas.py` | Canvas: capas floor → heatmap → walls → APs → leyenda; hit-test |
 | `coverage_renderer.py` | `SimulationResult` → imagen Pillow RGBA + leyenda + stats |
-| `app.py` | Ventana principal, **debounce ~150 ms** del heatmap |
-| `panels/toolbar.py` | Herramienta, banda, resolución, toggle heatmap, dimensiones |
+| `app.py` | Ventana principal, **debounce ~150 ms** del heatmap, menú **Archivo** (Nuevo/Abrir/Guardar/Guardar como) y confirmación de cambios sin guardar |
+| `panels/toolbar.py` | Herramienta, banda, resolución, toggle heatmap, dimensiones, selector de AP |
 | `panels/properties.py` | Propiedades del elemento + resumen simulación/heatmap |
+
+### `persistence/` (Fase 6)
+Representación externa del proyecto en **JSON**. Convierte
+`Project → dict → archivo` y `archivo → Project` con validación estricta
+(esquema, límites, NaN, ids únicos, material referenciado). No conoce
+Tkinter ni simula; el dominio (`core/`) no sabe que existen archivos.
+
+| Módulo | Responsabilidad |
+|---|---|
+| `json_project_repository.py` | `save_project` / `load_project`, `project_to_dict` / `project_from_dict`, `schema_version`, `ProjectFormatError`, escritura atómica |
+| `EditorState` | Preferencias persistibles del editor: banda activa y resolución del grid |
 
 ### `config/`
 Configuración centralizada en YAML. Radio, umbrales, bandas y materiales
@@ -155,6 +179,37 @@ trace_walls(source, target, walls, band_id) -> ObstacleTraceResult
 - 6 GHz: error visible (`MaterialAttenuationError`), sin fallback.
 - **No** hay interferencia, SINR, roaming ni optimización de canales.
 
+### Persistencia (Fase 6)
+
+```
+             ┌──────────────┐
+             │   Project    │  fuente de verdad (metros)
+             └──────┬───────┘
+        ┌───────────┴───────────┐
+        ▼                       ▼
+  persistence/              engine/
+   (JSON, v1)            simulate_coverage
+        │                       │
+        ▼                       ▼
+   archivo .json         SimulationResult
+                               │
+                               ▼
+                         UI (heatmap/paneles)
+```
+
+- El archivo guarda **solo** el `Project` + `EditorState` (banda y
+  resolución). Al abrir: `JSON → Project → simulate → UI`.
+- `schema_version` obligatoria; incompatible ⇒ `ProjectFormatError`
+  (error visible, proyecto actual intacto, sin carga parcial).
+- Coordenadas siempre en metros (`x_m`/`y_m`); los píxeles solo existen
+  en `Viewport`.
+- Las paredes referencian materiales por id dentro del propio catálogo
+  del proyecto (el archivo es autocontenido).
+- Escritura atómica (`.tmp` + `os.replace`) y revalidación previa:
+  no se deja un archivo que la app no pueda abrir.
+- **No** se persisten: selección, herramienta, heatmap, resultados de
+  simulación ni imágenes (se regeneran; ver `docs/decisions.md` AB–AK).
+
 ## Unidades
 
 | Magnitud | Unidad |
@@ -176,6 +231,11 @@ Los píxeles **no existen** en `core/` ni `engine/`.
 - **Fase 4 (hecha):** `CoverageGrid` + heatmap + leyenda + stats.
 - **Fase 5 (hecha):** multi-AP — mismo grid, `combine_results`,
   selector Todos/AP, dominancia por AP, estadísticas combinadas.
-- **Fase 6:** persistencia de `Project` (JSON/YAML).
+- **Fase 6 (hecha):** persistencia local JSON — `Project` ↔ archivo,
+  schema versionado, guardar/abrir/nuevo, dirty state.
+- **Fase 7:** por definir (p. ej. huecos/`Opening`, espacios `Space`,
+  canales).
 - **Futuro 3D:** `Floor.elevation_m` ya existe; geometría 2D no cambia.
 - **Openings / huecos:** atenuación diferenciada en fase posterior.
+- **Otras bases de datos / API / nube:** la capa `persistence/` es el
+  punto de sustitución sin tocar `core/` ni `engine/`.

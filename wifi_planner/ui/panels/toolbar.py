@@ -8,6 +8,10 @@ from typing import Callable
 
 from ui.session import HEATMAP_ALL_APS, Tool
 
+# Etiquetas visibles ↔ ids de banda (una sola tabla en la toolbar).
+BAND_LABEL_BY_ID = {"band_2_4": "2.4 GHz", "band_5": "5 GHz", "band_6": "6 GHz"}
+BAND_ID_BY_LABEL = {label: band_id for band_id, label in BAND_LABEL_BY_ID.items()}
+
 
 class Toolbar(ttk.Frame):
     """Herramientas, banda, resolución, heatmap, dimensiones y simulación."""
@@ -145,13 +149,28 @@ class Toolbar(ttk.Frame):
             return HEATMAP_ALL_APS
         return shown
 
+    def set_band_label(self, label: str) -> None:
+        """Sincroniza el combo de banda con una etiqueta conocida."""
+        if label in BAND_ID_BY_LABEL:
+            self._band_var.set(label)
+
+    def set_resolution_value(self, resolution_m: float) -> None:
+        """Sincroniza el combo de resolución con un valor del modelo."""
+        pretty = f"{resolution_m:.2f}"
+        self._res_var.set(
+            pretty if pretty in self.RESOLUTION_CHOICES else f"{resolution_m:g}"
+        )
+
+    def set_heatmap_enabled(self, enabled: bool) -> None:
+        """Sincroniza el checkbox del heatmap con el modelo."""
+        self._heatmap_var.set(bool(enabled))
+
     def _tool_changed(self) -> None:
         self._on_tool(Tool(self._tool_var.get()))
 
     def _band_changed(self, _event=None) -> None:
         label = self._band_var.get()
-        mapping = {"2.4 GHz": "band_2_4", "5 GHz": "band_5", "6 GHz": "band_6"}
-        self._on_band(mapping.get(label, "band_2_4"))
+        self._on_band(BAND_ID_BY_LABEL.get(label, "band_2_4"))
 
     def _ap_changed(self, _event=None) -> None:
         self._on_heatmap_ap(self.get_selected_ap_id())

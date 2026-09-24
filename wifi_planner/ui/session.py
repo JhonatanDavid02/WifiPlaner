@@ -21,6 +21,9 @@ from core.wall import Wall
 from engine.combine import combine_results
 from engine.coverage_grid import CoverageGrid
 from engine.simulator import simulate_coverage
+from persistence import EditorState
+from persistence import load_project as _load_document
+from persistence import save_project as _save_document
 
 # Selector de heatmap: todos los APs (cobertura combinada, Fase 5).
 HEATMAP_ALL_APS = "__all__"
@@ -106,6 +109,95 @@ class EditorSession:
         self.last_heatmap: SimulationResult | None = None
         self.last_heatmap_error: str | None = None
         self.heatmap_dirty: bool = True
+        # Fase 6: persistencia. Ruta del documento y cambios sin guardar.
+        self.project_path: str | None = None
+        self.dirty: bool = False
+
+    # ------------------------------------------------------------------
+    # Cambios sin guardar (Fase 6)
+    # ------------------------------------------------------------------
+
+    def mark_dirty(self) -> None:
+        """Marca el proyecto como modificado desde la última guarda."""
+        self.dirty = True
+
+    def mark_saved(self, path: str | None = None) -> None:
+        """Marca el proyecto como guardado (opcionalmente en una ruta)."""
+        if path is not None:
+            self.project_path = str(path)
+        self.dirty = False
+
+    # ------------------------------------------------------------------
+    # Persistencia (Fase 6): guardar / abrir / nuevo
+    # ------------------------------------------------------------------
+
+    def editor_state(self) -> EditorState:
+        """Preferencias persistibles del editor (banda y resolución)."""
+        return EditorState(
+            band_id=self.band_id, grid_resolution_m=self.grid_resolution_m
+        )
+
+    def save_project(self, path: str | None = None) -> str:
+        """Guarda el proyecto en JSON.
+
+        Args:
+            path: Ruta destino. Si es None se usa ``project_path``.
+
+        Raises:
+            ValueError: si el proyecto aún no tiene ruta (usar “Guardar como…”).
+            ProjectFormatError: el proyecto no serializa/valida.
+            OSError: fallo de escritura (el archivo previo queda intacto).
+        """
+        target = path if path is not None else self.project_path
+        if target is None:
+            raise ValueError("El proyecto no tiene ruta; usa “Guardar como…”.")
+        written = _save_document(
+            self.project, target, editor_state=self.editor_state()
+        )
+        self.mark_saved(str(written))
+        return str(written)
+
+    def save_project_as(self, path: str) -> str:
+        """Guarda el proyecto en otra ruta y la asocia al documento."""
+        return self.save_project(path)
+
+    def open_project(self, path: str) -> None:
+        """Carga un proyecto JSON y lo deja como documento activo.
+
+        Si el archivo es inválido lanza ``ProjectFormatError`` y el
+        proyecto actual queda intacto (sin estado parcial).
+        """
+        project, editor_state = _load_document(path)
+        self._replace_document(project, editor_state, path=str(path))
+
+    def new_project(self) -> None:
+        """Crea un proyecto vacío (12 × 8 m) y limpia el documento activo."""
+        self._replace_document(create_default_project(), EditorState(), path=None)
+
+    def _replace_document(
+        self, project: Project, editor_state: EditorState, path: str | None
+    ) -> None:
+        """Intercambia el documento y reinicia el estado transitorio.
+
+        Solo se conserva del archivo lo que es ``Project`` + configuración
+        persistible; la selección, el heatmap y las simulaciones se
+        regeneran (decisión AB/AC, docs/decisions.md).
+        """
+        self.project = project
+        self.project_path = path
+        self.tool = Tool.SELECT
+        self.selection = None
+        self.wall_drag_start = None
+        self.band_id = editor_state.band_id
+        self.grid_resolution_m = editor_state.grid_resolution_m
+        self.heatmap_ap_id = HEATMAP_ALL_APS
+        self.heatmap_enabled = True
+        self.last_simulation = None
+        self.last_simulation_error = None
+        self.last_heatmap = None
+        self.last_heatmap_error = None
+        self.invalidate_heatmap()
+        self.dirty = False
 
     # ------------------------------------------------------------------
     # Piso / dimensiones
@@ -131,6 +223,7 @@ class EditorSession:
         """Valida y aplica nuevas dimensiones del espacio (metros)."""
         self.floor.set_dimensions(width_m, height_m)
         self.invalidate_heatmap()
+        self.mark_dirty()
 
     def set_grid_resolution(self, resolution_m: float) -> None:
         """Resolución del CoverageGrid en metros (> 0, con límite mínimo)."""
@@ -147,6 +240,7 @@ class EditorSession:
             raise ValueError("Grid vacío con esa resolución.")
         self.grid_resolution_m = resolution
         self.invalidate_heatmap()
+        self.mark_dirty()
 
     def set_band(self, band_id: str) -> None:
         """Cambia la banda activa y invalida el heatmap (no reutiliza 2.4→5)."""
@@ -154,6 +248,7 @@ class EditorSession:
         if band_id != self.band_id:
             self.band_id = band_id
             self.invalidate_heatmap()
+            self.mark_dirty()
 
     def set_heatmap_enabled(self, enabled: bool) -> None:
         self.heatmap_enabled = bool(enabled)
@@ -365,6 +460,7 @@ class EditorSession:
         self.floor.walls.append(wall)
         self.select(SelectionKind.WALL, wall_id)
         self.invalidate_heatmap()
+        self.mark_dirty()
         return wall
 
     def add_access_point(self, position: Point2D) -> AccessPoint:
@@ -375,6 +471,7 @@ class EditorSession:
         self.project.access_points.append(ap)
         self.select(SelectionKind.AP, ap_id)
         self.invalidate_heatmap()
+        self.mark_dirty()
         return ap
 
     def add_client(self, position: Point2D) -> ClientDevice:
@@ -384,6 +481,7 @@ class EditorSession:
         client = ClientDevice(id=client_id, position=position)
         self.project.clients.append(client)
         self.select(SelectionKind.CLIENT, client_id)
+        self.mark_dirty()
         return client
 
     def _clamp_to_floor(self, position: Point2D) -> Point2D:
@@ -403,6 +501,7 @@ class EditorSession:
             if ap.id == ap_id:
                 self.project.access_points[index] = replace(ap, position=position)
                 self.invalidate_heatmap()
+                self.mark_dirty()
                 return
         raise KeyError(f"Access Point no encontrado: {ap_id}")
 
@@ -412,6 +511,7 @@ class EditorSession:
         for index, client in enumerate(self.project.clients):
             if client.id == client_id:
                 self.project.clients[index] = replace(client, position=position)
+                self.mark_dirty()
                 return
         raise KeyError(f"Cliente no encontrado: {client_id}")
 
@@ -422,6 +522,7 @@ class EditorSession:
             if wall.id == wall_id:
                 self.floor.walls[index] = replace(wall, material=material)
                 self.invalidate_heatmap()
+                self.mark_dirty()
                 return
         raise KeyError(f"Pared no encontrada: {wall_id}")
 
@@ -437,6 +538,7 @@ class EditorSession:
             if wall.id == wall_id:
                 self.floor.walls[index] = replace(wall, thickness_m=float(thickness_m))
                 self.invalidate_heatmap()
+                self.mark_dirty()
                 return
         raise KeyError(f"Pared no encontrada: {wall_id}")
 
@@ -456,6 +558,7 @@ class EditorSession:
                     del self.floor.walls[index]
                     self.selection = None
                     self.invalidate_heatmap()
+                    self.mark_dirty()
                     return True
         elif kind == SelectionKind.AP:
             for index, ap in enumerate(self.project.access_points):
@@ -466,6 +569,7 @@ class EditorSession:
                     if self.heatmap_ap_id == entity_id:
                         self.heatmap_ap_id = HEATMAP_ALL_APS
                     self.invalidate_heatmap()
+                    self.mark_dirty()
                     return True
         elif kind == SelectionKind.CLIENT:
             for index, client in enumerate(self.project.clients):
@@ -473,6 +577,7 @@ class EditorSession:
                     del self.project.clients[index]
                     self.selection = None
                     self.invalidate_heatmap()
+                    self.mark_dirty()
                     return True
         self.selection = None
         return False
