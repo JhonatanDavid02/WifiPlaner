@@ -67,6 +67,7 @@ class Toolbar(ttk.Frame):
             (Tool.WALL, "Pared"),
             (Tool.AP, "AP"),
             (Tool.CLIENT, "Cliente"),
+            (Tool.SPACE, "Zona"),
         ]
         for col, (tool, label) in enumerate(tools, start=1):
             ttk.Radiobutton(
@@ -78,10 +79,10 @@ class Toolbar(ttk.Frame):
             ).grid(row=0, column=col, padx=3, pady=4)
 
         ttk.Separator(self, orient="vertical").grid(
-            row=0, column=5, sticky="ns", padx=8, pady=4
+            row=0, column=6, sticky="ns", padx=8, pady=4
         )
 
-        ttk.Label(self, text="Banda:").grid(row=0, column=6, **pad)
+        ttk.Label(self, text="Banda:").grid(row=0, column=7, **pad)
         band_combo = ttk.Combobox(
             self,
             textvariable=self._band_var,
@@ -89,10 +90,10 @@ class Toolbar(ttk.Frame):
             state="readonly",
             width=8,
         )
-        band_combo.grid(row=0, column=7, **pad)
+        band_combo.grid(row=0, column=8, **pad)
         band_combo.bind("<<ComboboxSelected>>", self._band_changed)
 
-        ttk.Label(self, text="AP:").grid(row=0, column=8, **pad)
+        ttk.Label(self, text="AP:").grid(row=0, column=9, **pad)
         self._ap_combo = ttk.Combobox(
             self,
             textvariable=self._ap_var,
@@ -100,10 +101,10 @@ class Toolbar(ttk.Frame):
             state="readonly",
             width=14,
         )
-        self._ap_combo.grid(row=0, column=9, **pad)
+        self._ap_combo.grid(row=0, column=10, **pad)
         self._ap_combo.bind("<<ComboboxSelected>>", self._ap_changed)
 
-        ttk.Label(self, text="Res.:").grid(row=0, column=10, **pad)
+        ttk.Label(self, text="Res.:").grid(row=0, column=11, **pad)
         res_combo = ttk.Combobox(
             self,
             textvariable=self._res_var,
@@ -111,7 +112,7 @@ class Toolbar(ttk.Frame):
             state="readonly",
             width=6,
         )
-        res_combo.grid(row=0, column=11, **pad)
+        res_combo.grid(row=0, column=12, **pad)
         res_combo.bind("<<ComboboxSelected>>", self._resolution_changed)
 
         ttk.Checkbutton(
@@ -119,10 +120,10 @@ class Toolbar(ttk.Frame):
             text="Heatmap",
             variable=self._heatmap_var,
             command=self._heatmap_changed,
-        ).grid(row=0, column=12, padx=4, pady=4)
+        ).grid(row=0, column=13, padx=4, pady=4)
 
         # Fase 7: métrica del heatmap (vista: RSSI / SNR).
-        ttk.Label(self, text="Métrica:").grid(row=0, column=13, **pad)
+        ttk.Label(self, text="Métrica:").grid(row=0, column=14, **pad)
         metric_combo = ttk.Combobox(
             self,
             textvariable=self._metric_var,
@@ -130,22 +131,22 @@ class Toolbar(ttk.Frame):
             state="readonly",
             width=7,
         )
-        metric_combo.grid(row=0, column=14, **pad)
+        metric_combo.grid(row=0, column=15, **pad)
         metric_combo.bind("<<ComboboxSelected>>", self._metric_changed)
 
         ttk.Button(self, text="Eliminar", command=self._on_delete).grid(
-            row=0, column=15, padx=4, pady=4
-        )
-        ttk.Button(self, text="Espacio…", command=self._on_dimensions).grid(
             row=0, column=16, padx=4, pady=4
         )
-        ttk.Button(self, text="Config RF…", command=self._on_rf_settings).grid(
+        ttk.Button(self, text="Dimensiones…", command=self._on_dimensions).grid(
             row=0, column=17, padx=4, pady=4
         )
-        ttk.Button(self, text="Simular", command=self._on_simulate).grid(
+        ttk.Button(self, text="Config RF…", command=self._on_rf_settings).grid(
             row=0, column=18, padx=4, pady=4
         )
-        self.columnconfigure(19, weight=1)
+        ttk.Button(self, text="Simular", command=self._on_simulate).grid(
+            row=0, column=19, padx=4, pady=4
+        )
+        self.columnconfigure(20, weight=1)
 
     def set_ap_choices(self, choices: list[str], current: str | None = None) -> None:
         """Actualiza el selector de AP.

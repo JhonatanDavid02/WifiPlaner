@@ -6,19 +6,26 @@ la invoca y luego vuelve a dibujar desde el Project (fuente de verdad).
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Iterable
 
 from core.access_point import AccessPoint
 from core.client import ClientDevice
-from core.geometry import Point2D, Segment2D
+from core.geometry import Point2D, Rect, Segment2D
 from core.material import Material
 from core.project import Project
 from core.radio import wifi_generation
 from core.result import SimulationResult
-from core.space import Floor
-from core.wall import Wall
+from core.space import MIN_SPACE_SIZE_M, Floor, Space
+from core.wall import (
+    DEFAULT_OPENING_LENGTH_M,
+    MIN_OPENING_LENGTH_M,
+    OPENING_KINDS,
+    Opening,
+    Wall,
+)
 from engine.classifier import rf_diagnostic
 from engine.combine import combine_results
 from engine.coverage_grid import CoverageGrid
@@ -38,6 +45,7 @@ class Tool(str, Enum):
     WALL = "wall"
     AP = "ap"
     CLIENT = "client"
+    SPACE = "space"
 
 
 class HeatmapMetric(str, Enum):
@@ -64,6 +72,8 @@ class SelectionKind(str, Enum):
     WALL = "wall"
     AP = "ap"
     CLIENT = "client"
+    SPACE = "space"
+    OPENING = "opening"
 
 
 @dataclass(frozen=True)
@@ -120,6 +130,8 @@ class EditorSession:
         self.selection: Selection | None = None
         # Punto de inicio mientras se dibuja una pared (metros).
         self.wall_drag_start: Point2D | None = None
+        # Fase 8: punto de inicio mientras se dibuja un espacio (metros).
+        self.space_drag_start: Point2D | None = None
         self.band_id: str = "band_2_4"
         self.last_simulation: SimulationResult | None = None
         self.last_simulation_error: str | None = None
@@ -212,6 +224,7 @@ class EditorSession:
         self.tool = Tool.SELECT
         self.selection = None
         self.wall_drag_start = None
+        self.space_drag_start = None
         self.band_id = editor_state.band_id
         self.grid_resolution_m = editor_state.grid_resolution_m
         self.heatmap_ap_id = HEATMAP_ALL_APS
@@ -452,6 +465,7 @@ class EditorSession:
                     frequency_band=band,
                     sample_points=points,
                     walls=self.floor.walls,
+                    openings=self.floor.openings,
                 )
             )
 
@@ -527,6 +541,7 @@ class EditorSession:
     def set_tool(self, tool: Tool) -> None:
         self.tool = tool
         self.wall_drag_start = None
+        self.space_drag_start = None
         if tool != Tool.SELECT:
             self.selection = None
 
@@ -557,6 +572,33 @@ class EditorSession:
                     return client
         return None
 
+    def selected_space(self) -> Space | None:
+        if self.selection and self.selection.kind == SelectionKind.SPACE:
+            for space in self.floor.spaces:
+                if space.id == self.selection.entity_id:
+                    return space
+        return None
+
+    def selected_opening(self) -> Opening | None:
+        if self.selection and self.selection.kind == SelectionKind.OPENING:
+            for opening in self.floor.openings:
+                if opening.id == self.selection.entity_id:
+                    return opening
+        return None
+
+    def find_wall(self, wall_id: str) -> Wall | None:
+        """Pared por id (o None). Útil para el panel de propiedades."""
+        for wall in self.floor.walls:
+            if wall.id == wall_id:
+                return wall
+        return None
+
+    def openings_for_wall(self, wall_id: str) -> list[Opening]:
+        """Openings de una pared en orden canónico ``(start, id)``."""
+        from core.wall import group_openings_by_wall
+
+        return list(group_openings_by_wall(self.floor.openings).get(wall_id, ()))
+
     # ------------------------------------------------------------------
     # Crear entidades
     # ------------------------------------------------------------------
@@ -566,6 +608,8 @@ class EditorSession:
         ids += [ap.id for ap in self.project.access_points]
         ids += [c.id for c in self.project.clients]
         ids += [f.id for f in self.project.floors]
+        ids += [s.id for s in self.floor.spaces]
+        ids += [o.id for o in self.floor.openings]
         return ids
 
     def add_wall(self, start: Point2D, end: Point2D) -> Wall:
@@ -604,6 +648,189 @@ class EditorSession:
         self.select(SelectionKind.CLIENT, client_id)
         self.mark_dirty()
         return client
+
+    # ------------------------------------------------------------------
+    # Espacios (Fase 8): geometría + organización, sin RF (decisión BH)
+    # ------------------------------------------------------------------
+
+    def add_space(self, corner_a: Point2D, corner_b: Point2D) -> Space:
+        """Crea un espacio (rect alineado a ejes) entre dos esquinas.
+
+        Ambas esquinas se recortan al rectángulo del piso. El tamaño
+        mínimo por lado es ``MIN_SPACE_SIZE_M``. No invalida el heatmap:
+        los espacios no participan en la propagación (decisión BH).
+
+        Raises:
+            ValueError: si el rectángulo resultante es demasiado pequeño.
+        """
+        width = self.floor_width_m
+        height = self.floor_height_m
+
+        def _clamp(point: Point2D) -> tuple[float, float]:
+            return (
+                min(max(point.x, 0.0), width),
+                min(max(point.y, 0.0), height),
+            )
+
+        x1, y1 = _clamp(corner_a)
+        x2, y2 = _clamp(corner_b)
+        rect = Rect(
+            x=min(x1, x2),
+            y=min(y1, y2),
+            width=abs(x2 - x1),
+            height=abs(y2 - y1),
+        )
+        if rect.width < MIN_SPACE_SIZE_M or rect.height < MIN_SPACE_SIZE_M:
+            raise ValueError(
+                f"Espacio demasiado pequeño: mínimo {MIN_SPACE_SIZE_M:g} m "
+                f"por lado (got {rect.width:g} × {rect.height:g} m)."
+            )
+        space_id = next_entity_id(self._all_ids(), "SPACE")
+        number = space_id.rsplit("-", 1)[-1]
+        space = Space(id=space_id, name=f"Espacio {number}", rect=rect)
+        self.floor.spaces.append(space)
+        self.select(SelectionKind.SPACE, space_id)
+        self.mark_dirty()
+        return space
+
+    def set_space_properties(
+        self, space_id: str, name: str, function: str = ""
+    ) -> None:
+        """Actualiza nombre y función zonal de un espacio (strings)."""
+        name = str(name)
+        function = str(function)
+        if not name.strip():
+            raise ValueError("El nombre del espacio no puede estar vacío.")
+        if len(name) > 200 or len(function) > 200:
+            raise ValueError("Nombre o función demasiado largo (máx. 200).")
+        for index, space in enumerate(self.floor.spaces):
+            if space.id == space_id:
+                self.floor.spaces[index] = replace(
+                    space, name=name, function=function
+                )
+                self.mark_dirty()
+                return
+        raise KeyError(f"Espacio no encontrado: {space_id}")
+
+    # ------------------------------------------------------------------
+    # Aperturas (Fase 8): huecos en paredes (decisión BG: reemplazo)
+    # ------------------------------------------------------------------
+
+    def add_opening(
+        self, wall_id: str, kind: str, center_offset_m: float | None = None
+    ) -> Opening:
+        """Crea una apertura centrada (o en ``center_offset_m``) en una pared.
+
+        La longitud por defecto es la del tipo (``DEFAULT_OPENING_LENGTH_M``)
+        y se recorta para caber en la pared. Invalida el heatmap (los
+        openings sí afectan a la propagación) y marca ``dirty``.
+
+        Raises:
+            KeyError: si la pared no existe.
+            ValueError: si el tipo no es válido o la pared es demasiado
+                corta para cualquier apertura.
+        """
+        wall = self.find_wall(wall_id)
+        if wall is None:
+            raise KeyError(f"Pared no encontrada: {wall_id}")
+        if kind not in OPENING_KINDS:
+            raise ValueError(
+                f"Tipo de apertura no soportado: {kind!r} "
+                f"(permitidos: {', '.join(OPENING_KINDS)})."
+            )
+        wall_length = wall.segment.length
+        if wall_length < MIN_OPENING_LENGTH_M:
+            raise ValueError(
+                "La pared es demasiado corta para una apertura "
+                f"({wall_length:g} m)."
+            )
+        length = min(DEFAULT_OPENING_LENGTH_M[kind], wall_length)
+        center = wall_length / 2.0 if center_offset_m is None else float(center_offset_m)
+        start = min(max(center - length / 2.0, 0.0), wall_length - length)
+        end = start + length
+
+        opening_id = next_entity_id(self._all_ids(), "OPEN")
+        opening = Opening(
+            id=opening_id,
+            wall_id=wall_id,
+            start_offset_m=start,
+            end_offset_m=end,
+            kind=kind,
+        )
+        self.floor.openings.append(opening)
+        self.select(SelectionKind.OPENING, opening_id)
+        self.invalidate_heatmap()
+        self.mark_dirty()
+        return opening
+
+    def set_opening_offsets(
+        self, opening_id: str, start_offset_m: float, end_offset_m: float
+    ) -> None:
+        """Mueve/redimensiona una apertura por offsets métricos sobre la pared.
+
+        Los offsets se recortan al intervalo de la pared y después se
+        exige la longitud mínima: una edición nunca puede producir un
+        opening inválido o fuera de la pared.
+
+        Raises:
+            KeyError: si la apertura o su pared no existen.
+            ValueError: si los valores no son finitos o la longitud
+                resultante es menor que ``MIN_OPENING_LENGTH_M``.
+        """
+        try:
+            start = float(str(start_offset_m).replace(",", "."))
+            end = float(str(end_offset_m).replace(",", "."))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Offsets inválidos: {exc}") from exc
+        if not (math.isfinite(start) and math.isfinite(end)):
+            raise ValueError("Los offsets deben ser finitos.")
+
+        opening = None
+        for item in self.floor.openings:
+            if item.id == opening_id:
+                opening = item
+                break
+        if opening is None:
+            raise KeyError(f"Apertura no encontrada: {opening_id}")
+        wall = self.find_wall(opening.wall_id)
+        if wall is None:
+            raise KeyError(f"Pared no encontrada: {opening.wall_id}")
+
+        wall_length = wall.segment.length
+        start = min(max(start, 0.0), wall_length)
+        end = min(max(end, 0.0), wall_length)
+        if end - start < MIN_OPENING_LENGTH_M:
+            raise ValueError(
+                f"La apertura debe medir ≥ {MIN_OPENING_LENGTH_M:g} m "
+                f"(pared de {wall_length:g} m; got {end - start:g} m)."
+            )
+        for index, item in enumerate(self.floor.openings):
+            if item.id == opening_id:
+                self.floor.openings[index] = replace(
+                    item, start_offset_m=start, end_offset_m=end
+                )
+                self.invalidate_heatmap()
+                self.mark_dirty()
+                return
+        raise KeyError(f"Apertura no encontrada: {opening_id}")
+
+    def set_opening_kind(self, opening_id: str, kind: str) -> None:
+        """Cambia el tipo visual (door/window/pass_through).
+
+        El tipo NO altera la pérdida (decisión BG): marca ``dirty`` pero
+        no invalida el heatmap.
+        """
+        if kind not in OPENING_KINDS:
+            raise ValueError(
+                f"Tipo de apertura no soportado: {kind!r} "
+                f"(permitidos: {', '.join(OPENING_KINDS)})."
+            )
+        for index, item in enumerate(self.floor.openings):
+            if item.id == opening_id:
+                self.floor.openings[index] = replace(item, kind=kind)
+                self.mark_dirty()
+                return
+        raise KeyError(f"Apertura no encontrada: {opening_id}")
 
     def _clamp_to_floor(self, position: Point2D) -> Point2D:
         """Mantiene el punto dentro del rectángulo del piso."""
@@ -677,6 +904,13 @@ class EditorSession:
             for index, wall in enumerate(self.floor.walls):
                 if wall.id == entity_id:
                     del self.floor.walls[index]
+                    # Fase 8: al borrar la pared, sus openings se caen con ella
+                    # (nada puede referenciar una pared inexistente).
+                    remaining = [
+                        op for op in self.floor.openings if op.wall_id != entity_id
+                    ]
+                    if len(remaining) != len(self.floor.openings):
+                        self.floor.openings[:] = remaining
                     self.selection = None
                     self.invalidate_heatmap()
                     self.mark_dirty()
@@ -696,6 +930,22 @@ class EditorSession:
             for index, client in enumerate(self.project.clients):
                 if client.id == entity_id:
                     del self.project.clients[index]
+                    self.selection = None
+                    self.invalidate_heatmap()
+                    self.mark_dirty()
+                    return True
+        elif kind == SelectionKind.SPACE:
+            # Los espacios no son RF: dirty sí, heatmap no (decisión BH).
+            for index, space in enumerate(self.floor.spaces):
+                if space.id == entity_id:
+                    del self.floor.spaces[index]
+                    self.selection = None
+                    self.mark_dirty()
+                    return True
+        elif kind == SelectionKind.OPENING:
+            for index, opening in enumerate(self.floor.openings):
+                if opening.id == entity_id:
+                    del self.floor.openings[index]
                     self.selection = None
                     self.invalidate_heatmap()
                     self.mark_dirty()
@@ -749,6 +999,7 @@ class EditorSession:
             frequency_band=band,
             sample_points=points,
             walls=self.floor.walls,
+            openings=self.floor.openings,
         )
         self.last_simulation = result
         return result

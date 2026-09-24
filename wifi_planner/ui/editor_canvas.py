@@ -2,6 +2,9 @@
 
 La fuente de verdad es Session.project. El Canvas solo representa.
 No contiene fórmulas RF.
+
+Fase 8: dibuja espacios (zonas semitransparentes) y openings
+(puertas/ventanas/pass-through) como huecos coloreados en las paredes.
 """
 
 from __future__ import annotations
@@ -10,9 +13,16 @@ import tkinter as tk
 from typing import Callable
 
 from core.geometry import Point2D, Segment2D
+from core.wall import group_openings_by_wall, wall_point_at_offset
 from ui import theme
 from ui.session import EditorSession, SelectionKind, Tool
 from ui.viewport import Viewport
+
+OPENING_COLORS = {
+    "door": theme.DOOR_COLOR,
+    "window": theme.WINDOW_COLOR,
+    "pass_through": theme.PASS_THROUGH_COLOR,
+}
 
 
 class EditorCanvas(tk.Canvas):
@@ -123,7 +133,10 @@ class EditorCanvas(tk.Canvas):
         # 2) Heatmap (capa intermedia, bajo las entidades)
         self._place_heatmap_item()
 
-        # 3) Paredes
+        # 2b) Espacios (zonas organizativas, bajo las paredes)
+        self._draw_spaces()
+
+        # 3) Paredes (con huecos de openings) + openings encima
         self._draw_walls()
 
         # Vista previa de pared en curso
@@ -134,6 +147,16 @@ class EditorCanvas(tk.Canvas):
                 self.create_line(
                     sx1, sy1, sx2, sy2,
                     fill=theme.WALL_PREVIEW, width=2, dash=(4, 3),
+                )
+
+        # Vista previa de espacio en curso (rect punteado entre 2 esquinas)
+        if self.session.tool == Tool.SPACE and self.session.space_drag_start is not None:
+            if self._preview_end is not None:
+                sx1, sy1 = vp.world_to_screen(self.session.space_drag_start)
+                sx2, sy2 = vp.world_to_screen(self._preview_end)
+                self.create_rectangle(
+                    min(sx1, sx2), min(sy1, sy2), max(sx1, sx2), max(sy1, sy2),
+                    outline=theme.SPACE_PREVIEW, width=2, dash=(4, 3),
                 )
 
         # 4) APs / clientes (siempre visibles sobre el heatmap)
@@ -159,12 +182,41 @@ class EditorCanvas(tk.Canvas):
             text=f"{h:g} m", fill=theme.TEXT_DIM, font=("Segoe UI", 9),
         )
 
-    def _draw_walls(self) -> None:
+    def _draw_spaces(self) -> None:
+        """Espacios como rect semitransparente con nombre (fase 8)."""
         vp = self.viewport
         selected = self.session.selection
+        for space in self.session.floor.spaces:
+            rect = space.rect
+            x1, y1 = vp.world_to_screen(Point2D(rect.x, rect.y))
+            x2, y2 = vp.world_to_screen(Point2D(rect.x + rect.width, rect.y + rect.height))
+            is_sel = (
+                selected is not None
+                and selected.kind == SelectionKind.SPACE
+                and selected.entity_id == space.id
+            )
+            self.create_rectangle(
+                min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2),
+                fill=theme.SPACE_FILL,
+                outline=theme.SPACE_SELECTED if is_sel else theme.SPACE_OUTLINE,
+                width=3 if is_sel else 1,
+                stipple="gray25",
+            )
+            self.create_text(
+                (x1 + x2) / 2, (y1 + y2) / 2,
+                text=space.name, fill=theme.TEXT_DIM, font=("Segoe UI", 8),
+            )
+
+    def _draw_walls(self) -> None:
+        """Paredes con huecos a la altura de sus openings + marcas de opening.
+
+        Los openings se dibujan como un segmento de color (puerta/ventana/
+        pass-through) sobre el hueco; el resto de la pared es segmento sólido.
+        """
+        vp = self.viewport
+        selected = self.session.selection
+        openings_by_wall = group_openings_by_wall(self.session.floor.openings)
         for wall in self.session.floor.walls:
-            sx1, sy1 = vp.world_to_screen(wall.segment.start)
-            sx2, sy2 = vp.world_to_screen(wall.segment.end)
             is_sel = (
                 selected is not None
                 and selected.kind == SelectionKind.WALL
@@ -172,7 +224,44 @@ class EditorCanvas(tk.Canvas):
             )
             color = theme.WALL_SELECTED if is_sel else theme.WALL_COLOR
             width = 4 if is_sel else 3
-            self.create_line(sx1, sy1, sx2, sy2, fill=color, width=width, capstyle="round")
+            length = wall.segment.length
+
+            # Segmentos sólidos: fuera de los huecos.
+            covered = openings_by_wall.get(wall.id, ())
+            cursor = 0.0
+            for opening in covered:
+                gap_start = max(opening.start_offset_m, 0.0)
+                gap_end = min(opening.end_offset_m, length)
+                if gap_start > cursor:
+                    self._draw_wall_span(wall, cursor, gap_start, color, width)
+                cursor = max(cursor, gap_end)
+            if cursor < length:
+                self._draw_wall_span(wall, cursor, length, color, width)
+
+            # Marca de cada opening (encima del hueco).
+            for opening in covered:
+                is_open_sel = (
+                    selected is not None
+                    and selected.kind == SelectionKind.OPENING
+                    and selected.entity_id == opening.id
+                )
+                o_color = (
+                    theme.OPENING_SELECTED if is_open_sel
+                    else OPENING_COLORS.get(opening.kind, theme.WALL_COLOR)
+                )
+                sx1, sy1 = vp.world_to_screen(
+                    wall_point_at_offset(wall, opening.start_offset_m)
+                )
+                sx2, sy2 = vp.world_to_screen(
+                    wall_point_at_offset(wall, opening.end_offset_m)
+                )
+                self.create_line(
+                    sx1, sy1, sx2, sy2,
+                    fill=o_color, width=5 if is_open_sel else 4,
+                    capstyle="round",
+                )
+
+            # Etiqueta de material en el centro de la pared.
             mx, my = vp.world_to_screen(
                 Point2D(
                     (wall.segment.start.x + wall.segment.end.x) / 2,
@@ -183,6 +272,17 @@ class EditorCanvas(tk.Canvas):
                 mx, my - 10, text=wall.material.id,
                 fill=theme.TEXT_DIM, font=("Segoe UI", 7),
             )
+
+    def _draw_wall_span(
+        self, wall, from_m: float, to_m: float, color: str, width: int
+    ) -> None:
+        """Dibuja un tramo de pared entre dos offsets métricos."""
+        vp = self.viewport
+        start = wall_point_at_offset(wall, from_m)
+        end = wall_point_at_offset(wall, to_m)
+        sx1, sy1 = vp.world_to_screen(start)
+        sx2, sy2 = vp.world_to_screen(end)
+        self.create_line(sx1, sy1, sx2, sy2, fill=color, width=width, capstyle="round")
 
     def _draw_aps_and_clients(self) -> None:
         vp = self.viewport
@@ -284,8 +384,8 @@ class EditorCanvas(tk.Canvas):
                 if (ex - wx) ** 2 + (ey - wy) ** 2 <= self.SNAP_RADIUS_PX ** 2:
                     return endpoint
 
-        # 2) Ejes H/V respecto al inicio del trazo de pared
-        start = self.session.wall_drag_start
+        # 2) Ejes H/V respecto al inicio del trazo (pared o espacio)
+        start = self.session.wall_drag_start or self.session.space_drag_start
         if start is not None:
             # Umbral en metros equivalente a SNAP_RADIUS_PX
             tol_m = self.SNAP_RADIUS_PX / max(vp.scale, 1e-9)
@@ -315,12 +415,41 @@ class EditorCanvas(tk.Canvas):
             if (cx - wx) ** 2 + (cy - wy) ** 2 <= radius ** 2:
                 return SelectionKind.CLIENT, client.id
 
+        # Openings ANTES que sus paredes (un hueco es un sub-elemento de la
+        # pared; si el clic cae en el hueco, hay que seleccionar el opening).
+        for opening in reversed(self.session.floor.openings):
+            wall = self.session.find_wall(opening.wall_id)
+            if wall is None:
+                continue
+            sx, sy = vp.world_to_screen(
+                wall_point_at_offset(wall, opening.start_offset_m)
+            )
+            ex, ey = vp.world_to_screen(
+                wall_point_at_offset(wall, opening.end_offset_m)
+            )
+            if self._point_segment_dist_px(wx, wy, sx, sy, ex, ey) <= radius:
+                return SelectionKind.OPENING, opening.id
+
         # Paredes: distancia punto-segmento en píxeles
         for wall in reversed(self.session.floor.walls):
             sx, sy = vp.world_to_screen(wall.segment.start)
             ex, ey = vp.world_to_screen(wall.segment.end)
             if self._point_segment_dist_px(wx, wy, sx, sy, ex, ey) <= radius:
                 return SelectionKind.WALL, wall.id
+
+        # Espacios (rect): por debajo de paredes/openings (el plano es
+        # organizativo; la geometría estructural manda).
+        for space in reversed(self.session.floor.spaces):
+            rect = space.rect
+            x1, y1 = vp.world_to_screen(Point2D(rect.x, rect.y))
+            x2, y2 = vp.world_to_screen(
+                Point2D(rect.x + rect.width, rect.y + rect.height)
+            )
+            if (
+                min(x1, x2) - radius <= wx <= max(x1, x2) + radius
+                and min(y1, y2) - radius <= wy <= max(y1, y2) + radius
+            ):
+                return SelectionKind.SPACE, space.id
         return None
 
     @staticmethod
@@ -347,6 +476,9 @@ class EditorCanvas(tk.Canvas):
         self.on_cursor(world.x, world.y)
 
         if self.session.tool == Tool.WALL and self.session.wall_drag_start is not None:
+            self._preview_end = self._snap_world(world)
+            self.render_project()
+        elif self.session.tool == Tool.SPACE and self.session.space_drag_start is not None:
             self._preview_end = self._snap_world(world)
             self.render_project()
 
@@ -392,6 +524,22 @@ class EditorCanvas(tk.Canvas):
                 self._preview_end = None
                 # Permite seguir encadenando paredes desde el último punto
                 # (se reinicia; el usuario vuelve a clicar).
+            self.render_project()
+            self.on_model_changed()
+            return
+
+        if tool == Tool.SPACE:
+            # Dos clics como la pared: esquina inicial → esquina opuesta.
+            if self.session.space_drag_start is None:
+                self.session.space_drag_start = world
+                self._preview_end = world
+            else:
+                try:
+                    self.session.add_space(self.session.space_drag_start, world)
+                except ValueError:
+                    pass
+                self.session.space_drag_start = None
+                self._preview_end = None
             self.render_project()
             self.on_model_changed()
             return

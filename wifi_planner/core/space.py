@@ -6,6 +6,10 @@ from dataclasses import dataclass, field
 
 from core.geometry import Rect
 
+# Tamaño mínimo de un espacio creado desde el editor, en metros por
+# lado (decisión BK). Un rect menor sería invisible/inutilizable.
+MIN_SPACE_SIZE_M = 0.1
+
 
 @dataclass
 class Space:

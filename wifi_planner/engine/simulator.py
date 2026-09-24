@@ -18,7 +18,7 @@ from typing import Sequence
 from core.geometry import Point2D
 from core.radio import allowed_channel_widths_mhz
 from core.result import LinkEvaluation, ObstacleLoss, SimulationResult
-from core.wall import Wall
+from core.wall import Opening, Wall
 from engine.link_budget import evaluate_link
 from engine.obstacles import obstacle_loss_for_crossings, trace_to_obstacle_loss, trace_walls
 
@@ -31,6 +31,7 @@ def simulate_coverage(
     obstacle_materials_by_point: dict[Point2D, list] | None = None,
     client: object | None = None,
     walls: Sequence[Wall] | None = None,
+    openings: Sequence[Opening] | None = None,
 ) -> SimulationResult:
     """Simula la cobertura de un AP sobre uno o varios puntos.
 
@@ -49,6 +50,11 @@ def simulate_coverage(
             L_obstacles de cada punto se obtiene con ``trace_walls``
             (intersección real AP → punto). Tiene prioridad sobre
             ``obstacle_materials_by_point``.
+        openings: Openings del plano (Fase 8). Solo se consultan en la
+            ruta geométrica (cuando se pasan ``walls``); sustituyen la
+            atenuación de la pared en los cruces que caen dentro de un
+            hueco (decisión BG). Por defecto ninguno: resultado idéntico
+            a Fase 2–7.
 
     Returns:
         SimulationResult con una LinkEvaluation por punto evaluado.
@@ -57,8 +63,8 @@ def simulate_coverage(
         ValueError: si no hay puntos que evaluar, o si el ancho de
             canal de la radio no es compatible con la banda (Fase 7:
             2.4 GHz admite 20/40 MHz; 5/6 GHz 20/40/80/160 MHz).
-        MaterialAttenuationError: si una pared cruzada no tiene datos
-            de atenuación para la banda (p. ej. 6 GHz).
+        MaterialAttenuationError: si una pared cruzada en sección sólida
+            no tiene datos de atenuación para la banda (p. ej. 6 GHz).
     """
     if sample_points is None and client is None:
         raise ValueError(
@@ -87,6 +93,7 @@ def simulate_coverage(
         obstacle_materials_by_point = {}
 
     walls_list: list[Wall] = list(walls) if walls is not None else []
+    openings_list: list[Opening] = list(openings) if openings is not None else []
     use_geometry = walls is not None
 
     evaluations: list[LinkEvaluation] = []
@@ -98,6 +105,7 @@ def simulate_coverage(
                 target=point,
                 walls=walls_list,
                 band_id=frequency_band.id,
+                openings=openings_list,
             )
             obstacle = trace_to_obstacle_loss(trace)
         else:

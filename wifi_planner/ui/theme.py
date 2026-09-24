@@ -28,6 +28,16 @@ GRID_COLOR = "#2a2a3c"
 TEXT_DIM = "#8a8aa0"
 TEXT_LABEL = "#c0c0d0"
 
+# Fase 8: espacios (zonas) y aperturas (puertas/ventanas)
+SPACE_FILL = "#3a4a6b"
+SPACE_OUTLINE = "#7a8ab0"
+SPACE_SELECTED = "#4f9cf9"
+SPACE_PREVIEW = "#4f9cf9"
+DOOR_COLOR = "#e5c07b"
+WINDOW_COLOR = "#56b6c2"
+PASS_THROUGH_COLOR = "#c678dd"
+OPENING_SELECTED = "#4f9cf9"
+
 # Controles ttk (estilo)
 STYLE_MAP = {
     "TFrame": {"background": [("active", BG), ("!active", BG)]},

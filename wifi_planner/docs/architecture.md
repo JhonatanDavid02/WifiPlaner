@@ -6,7 +6,17 @@ Wi-Fi Planner es un sistema de diseño y simulación visual de redes Wi-Fi.
 La V1 establece la **fundación**: dominio, geometría en metros, motor RF
 centralizado, configuración centralizada, pruebas y documentación.
 
-**Fase 6 + 6.1 (actual):** persistencia local de proyectos en **JSON**,
+**Fase 8 (actual):** geometría arquitectónica — `Space` (zonas) y
+`Opening` (puertas/ventanas/pass-through) sobre paredes. Los openings
+son **muro-relativos** (offsets métricos sobre `wall.segment.start`) y
+su cruce en el rayo **sustituye** la atenuación de la pared por el
+override del hueco (0 dB por defecto; nunca suma). Los espacios son
+organizativos: no participan en la propagación. El editor gana la
+herramienta `Zona` y la creación de aperturas desde la pared
+seleccionada; `persistence/` añade claves opcionales `spaces`/`openings`
+dentro de `floors[]` manteniendo `schema_version = 1`.
+
+**Fase 6 + 6.1:** persistencia local de proyectos en **JSON**,
 auditada y endurecida (F6.1). El `Project` es la única fuente de verdad
 editable: se guarda a archivo y se regenera todo lo derivado
 (simulación, heatmap, UI) al abrir. La capa `persistence/` aísla el
@@ -23,7 +33,7 @@ no es una simulación electromagnética completa.
 
 ```
 ┌─────────────────────────────────────────────┐
-│  UI (Fase 3–7)                              │
+│  UI (Fase 3–8)                              │
 │  editor 2D (Tkinter), heatmap (Pillow),     │
 │  viewport (metros→píxeles), paneles,        │
 │  menú Archivo (Nuevo/Abrir/Guardar)         │
@@ -31,7 +41,7 @@ no es una simulación electromagnética completa.
 │  NUNCA serializa el proyecto por su cuenta  │
 │  NUNCA contiene fórmulas de RF              │
 ├─────────────────────────────────────────────┤
-│  persistence/  (Fase 6, 6.1, 7)             │
+│  persistence/  (Fase 6, 6.1, 7, 8)          │
 │  Project ↔ JSON (schema_version), validación│
 │  de entrada no confiable, escritura atómica │
 │  Importa core/ (+ engine solo para validar  │
@@ -76,8 +86,8 @@ Representa el dominio. Entidades puras, sin lógica de RF ni de UI.
 | `radio.py` | `RadioConfiguration` — P_tx, ganancias, pérdidas, Lm, sensibilidad, **ruido/ancho/estándar (F7)** + `allowed_channel_widths_mhz`, `wifi_generation` |
 | `access_point.py` | `AccessPoint` — posición en metros + configuración de radio |
 | `client.py` | `ClientDevice` — posición + sensibilidad |
-| `wall.py` | `Wall`, `Opening`, `Obstacle` — geometría + material + espesor |
-| `space.py` | `Space`, `Floor` — zonas y pisos (`width_m`/`height_m`) |
+| `wall.py` | `Wall`, `Opening`, `Obstacle` — geometría + material + espesor. **F8:** `Opening` muro-relativo con validación (límites BK), `OPENING_KINDS`, `wall_point_at_offset`, `opening_segment`, `group_openings_by_wall` (orden canónico) |
+| `space.py` | `Space`, `Floor` — zonas y pisos (`width_m`/`height_m`); `MIN_SPACE_SIZE_M` (F8) |
 | `project.py` | `Project`, `CoverageThresholds` — contenedor raíz + umbrales (RSSI/SOM/calidad + `snr_target_db`) |
 | `result.py` | `LinkEvaluation` (con `snr_db`/`noise_floor_dbm`), `SimulationResult`, `QualityClass`, `Verdict` |
 
@@ -91,24 +101,24 @@ devuelven resultados. **La UI solo consume estos resultados.**
 | `link_budget.py` | Presupuesto de enlace, SOM, SNR (`signal_to_noise_ratio`), `evaluate_link` |
 | `classifier.py` | Clasificación SOM / RSSI / calidad + `meets_snr_target` y diagnóstico `rf_diagnostic` (F7) |
 | `intersection.py` | Cruce trayecto ↔ segmento de pared (interior estricto) |
-| `obstacles.py` | `trace_walls`, atenuación por material/espesor, suma |
+| `obstacles.py` | `trace_walls(..., openings=)` — atenuación por material/espesor, suma; **F8:** un cruce dentro de un hueco **sustituye** la pérdida del material por el override del hueco (decisión BG); `WallCrossing`/`CrossingLoss` llevan `opening_id` |
 | `coverage_grid.py` | **Fase 4:** malla regular de puntos (metros), límites |
-| `simulator.py` | `simulate_coverage` — un punto o el grid completo; valida ancho×banda (F7) y calcula stats con SNR |
+| `simulator.py` | `simulate_coverage` — un punto o el grid completo; valida ancho×banda (F7), calcula stats con SNR y propaga `openings` a `trace_walls` (F8) |
 | `combine.py` | Combinación de resultados multi-AP (Fase 5) con stats de SNR del ganador (F7) |
 
-### `ui/` (Fase 3–7)
+### `ui/` (Fase 3–8)
 Presentación. Sin fórmulas RF; solo pintar, capturar eventos y llamar
 al engine / `EditorSession`.
 
 | Módulo | Responsabilidad |
 |---|---|
-| `session.py` | `EditorSession`: operaciones puras sobre `Project` (testeable sin Tk): editor + guardar/abrir/nuevo + dirty state + `heatmap_metric`/`apply_rf_settings` (F7) |
+| `session.py` | `EditorSession`: operaciones puras sobre `Project` (testeable sin Tk): editor + guardar/abrir/nuevo + dirty state + `heatmap_metric`/`apply_rf_settings` (F7) + **CRUD de `Space`/`Opening` (F8)**: `add_space`/`set_space_properties`, `add_opening`/`set_opening_offsets`/`set_opening_kind` (clamps, invalidación y cascada pared → openings), passthrough de `openings` a `simulate_coverage` |
 | `viewport.py` | **Único** conversor metros ↔ píxeles (escala isotrópica) |
-| `editor_canvas.py` | Canvas: capas floor → heatmap → walls → APs → leyenda (RSSI o SNR); hit-test |
+| `editor_canvas.py` | Canvas: capas floor → heatmap → spaces → walls (con huecos) → APs → leyenda (RSSI o SNR); hit-test openings → paredes → espacios; tool `Zona` con dos clics + preview (F8) |
 | `coverage_renderer.py` | `SimulationResult` → imagen Pillow RGBA + leyenda + stats; escalas `rssi`/`snr` (F7, parámetro `metric`) |
-| `app.py` | Ventana principal, **debounce ~150 ms** del heatmap, menú **Archivo** (Nuevo/Abrir/Guardar/Guardar como) y confirmación de cambios sin guardar |
-| `panels/toolbar.py` | Herramienta, banda, resolución, toggle heatmap, selector de AP, **métrica RSSI/SNR y Config RF… (F7)**, dimensiones |
-| `panels/properties.py` | Propiedades del elemento + resumen simulación/heatmap + bloque RF global (F7) |
+| `app.py` | Ventana principal, **debounce ~150 ms** del heatmap, menú **Archivo** (Nuevo/Abrir/Guardar/Guardar como) y confirmación de cambios sin guardar; tecla `e` → tool Zona, Escape limpia trazos (F8) |
+| `panels/toolbar.py` | Herramienta (incl. **Zona**, F8), banda, resolución, toggle heatmap, selector de AP, **métrica RSSI/SNR y Config RF… (F7)**, **Dimensiones…** (F8 renombra el viejo `Espacio…`) |
+| `panels/properties.py` | Propiedades del elemento + resumen simulación/heatmap + bloque RF global (F7) + **Espacio (nombre/función) y Apertura (tipo/offsets) + `+ Puerta`/`+ Ventana` desde la pared (F8)** |
 | `dialogs/rf_dialog.py` | **F7:** diálogo de configuración RF (ruido, objetivos, estándar, ancho); captura `ValueError` |
 
 ### `persistence/` (Fase 6, endurecida en 6.1)
@@ -121,7 +131,7 @@ Tkinter ni simula; el dominio (`core/`) no sabe que existen archivos.
 
 | Módulo | Responsabilidad |
 |---|---|
-| `json_project_repository.py` | `save_project` (revalida + `.tmp` + `fsync` + `os.replace`) / `load_project`, `project_to_dict` / `project_from_dict`, dispatch por `schema_version` (`_document_v1`; punto de extensión para futuras versiones), `ProjectFormatError`, límites |
+| `json_project_repository.py` | `save_project` (revalida + `.tmp` + `fsync` + `os.replace`) / `load_project`, `project_to_dict` / `project_from_dict`, dispatch por `schema_version` (`_document_v1`; punto de extensión para futuras versiones), `ProjectFormatError`, límites; **F8:** `spaces`/`openings` por piso (claves opcionales al leer, siempre escritas) con validación estricta (pared existente, offsets dentro de la pared, límites BJ) |
 | `EditorState` | Preferencias persistibles del editor: banda activa y resolución del grid |
 
 ### `config/`
@@ -152,9 +162,9 @@ UI (metros)                    engine                              UI (píxeles)
 
 1. El editor construye un `Project` con geometría en **metros**.
 2. `EditorSession.run_heatmap()` construye el `CoverageGrid` y llama a
-   `engine.simulate_coverage(..., sample_points=grid.points(), walls=floor.walls)`.
-3. Por cada punto, `trace_walls` + link budget canónico (sin fórmulas
-   nuevas en la UI).
+   `engine.simulate_coverage(..., sample_points=grid.points(), walls=floor.walls, openings=floor.openings)`.
+3. Por cada punto, `trace_walls` (paredes + openings) + link budget
+   canónico (sin fórmulas nuevas en la UI).
 4. `ui.coverage_renderer.build_heatmap_image` pinta cada evaluación como
    celda centrada en su punto, alineada al `Viewport` (metros → píxeles
    solo vía `Viewport`).
@@ -165,7 +175,7 @@ UI (metros)                    engine                              UI (píxeles)
 ### `trace_walls` (responsabilidad clave)
 
 ```
-trace_walls(source, target, walls, band_id) -> ObstacleTraceResult
+trace_walls(source, target, walls, band_id, openings=()) -> ObstacleTraceResult
 ```
 
 - Evalúa cada pared con `blocks_signal=True` contra el segmento
@@ -173,6 +183,13 @@ trace_walls(source, target, walls, band_id) -> ObstacleTraceResult
 - Conserva **orden y detalle** por pared (`WallCrossing`).
 - Total: `attenuation_db = Σ loss_db` (redondeado a 2 decimales).
 - Determinista: empates de distancia se rompen por `wall.id`.
+- **Fase 8:** si el cruce cae dentro de la unión de los openings de la
+  pared (intervalo cerrado con ε, orden canónico `(start, id)`), la
+  pérdida de ese cruce es `override(banda)` o 0 dB — **sustituye** a la
+  del material (decisión BG). El cruce lleva `opening_id`. Un cruce en
+  hueco no consulta el catálogo de materiales (6 GHz con hueco ⇒ 0 dB);
+  los cruces sólidos siguen lanzando `MaterialAttenuationError`. Sin
+  `openings` el resultado es idéntico al de Fase 2–7.
 
 ### Heatmap (Fase 4–5, métrica en 7)
 
@@ -244,6 +261,15 @@ trace_walls(source, target, walls, band_id) -> ObstacleTraceResult
   `channel_width_mhz`, `wifi_standard` y `thresholds` `snr_target_db`
   como claves **opcionales** (ausentes ⇒ defaults de `core/`): los
   archivos F6 abren sin migración (decisión AZ).
+- **F8 (misma versión 1, decisión BE):** cada piso puede traer
+  `spaces` y `openings` como claves **opcionales** (ausentes ⇒ listas
+  vacías): los archivos F6/F7 abren sin migración. Al guardar se
+  escriben **siempre**. Validación estricta: `wall_id` debe existir en
+  el mismo piso, `end_offset_m` no puede exceder la longitud de la
+  pared, offsets finitos, tipo en `OPENING_KINDS`, overrides en
+  [0, 200] dB, ids únicos y límites BJ (`MAX_SPACES`,
+  `MAX_OPENINGS`, `MAX_OPENINGS_PER_WALL`). Los espacios **no**
+  deben caer dentro del rect del piso (decisión BJ).
 
 ## Unidades
 
@@ -276,8 +302,13 @@ Los píxeles **no existen** en `core/` ni `engine/`.
   validación ancho×banda), heatmap con métrica SNR, stats ampliadas,
   diagnóstico de cuatro cuadrantes, diálogo Config RF y claves
   opcionales en schema v1 (compatibilidad F6).
-- **Fase 8 / futuro:** huecos/`Opening`, espacios `Space`, canales.
+- **Fase 8 (hecha):** geometría arquitectónica — `Space` (zonas, sin
+  RF), `Opening` muro-relativo (puertas/ventanas/pass-through) con
+  semántica de **reemplazo** en `trace_walls`, editor (tool `Zona`,
+  creación/edición de aperturas, hit-test, preview), claves opcionales
+  `spaces`/`openings` en schema v1, tests de dominio/geometría/persistencia.
+- **Futuro:** canales/interferencia, mobiliario (`Obstacle`), edición
+  de extremos de pared, CAD (snaps, snaps angulares, booleanos).
 - **Futuro 3D:** `Floor.elevation_m` ya existe; geometría 2D no cambia.
-- **Openings / huecos:** atenuación diferenciada en fase posterior.
 - **Otras bases de datos / API / nube:** la capa `persistence/` es el
   punto de sustitución sin tocar `core/` ni `engine/`.

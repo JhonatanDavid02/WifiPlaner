@@ -285,6 +285,7 @@ class WifiPlannerApp(tk.Tk):
         self.bind("w", make_tool_handler(Tool.WALL))
         self.bind("a", make_tool_handler(Tool.AP))
         self.bind("c", make_tool_handler(Tool.CLIENT))
+        self.bind("e", make_tool_handler(Tool.SPACE))
 
     def _initial_render(self) -> None:
         w = self.canvas.winfo_width()
@@ -476,6 +477,7 @@ class WifiPlannerApp(tk.Tk):
 
     def _on_escape(self, _event=None) -> str:
         self.session.wall_drag_start = None
+        self.session.space_drag_start = None
         self.session.select(None, None)
         self._set_tool(Tool.SELECT)
         self.properties.refresh()

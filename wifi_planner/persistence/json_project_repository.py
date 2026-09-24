@@ -12,7 +12,8 @@ Formato (``schema_version = 1``)::
         "radio": {...},
         "thresholds": {...},
         "floors": [{"id", "name", "level", "width_m", "height_m",
-                    "elevation_m", "metadata", "walls": [...]}],
+                    "elevation_m", "metadata", "walls": [...],
+                    "spaces": [...], "openings": [...]}],
         "access_points": [...],
         "clients": [...],
         "metadata": {...}
@@ -20,7 +21,7 @@ Formato (``schema_version = 1``)::
       "editor": {"band_id": "band_2_4", "grid_resolution_m": 0.5}
     }
 
-Decisiones de formato (docs/decisions.md, Fase 6 + 7):
+Decisiones de formato (docs/decisions.md, Fase 6 + 7 + 8):
 
 - Coordenadas SIEMPRE en metros (``x_m`` / ``y_m``); los píxeles no
   existen aquí (la conversión es responsabilidad del ``Viewport``).
@@ -35,6 +36,12 @@ Decisiones de formato (docs/decisions.md, Fase 6 + 7):
   ``thresholds`` puede traer ``snr_target_db``. Si faltan (archivos F6)
   se aplican los defaults centralizados de ``core/`` (decisión AZ):
   ningún proyecto F6 deja de abrirse.
+- Fase 8 (misma versión 1, decisiones BE/BJ): ``floors[]`` gana las
+  claves **opcionales** ``spaces`` y ``openings`` (ausentes ⇒ listas
+  vacías: archivos F6/F7 abren sin migración). Los openings exigen
+  ``wall_id`` existente en el mismo piso y offsets dentro de la pared.
+  ``Opening.blocks_signal`` no existía en el formato: el hueco siempre
+  modifica su pared (la semántica es del cruce, no de una bandera).
 """
 
 from __future__ import annotations
@@ -49,7 +56,7 @@ from typing import Any
 from core.access_point import AccessPoint
 from core.band import FrequencyBand
 from core.client import ClientDevice
-from core.geometry import Point2D, Segment2D
+from core.geometry import Point2D, Rect, Segment2D
 from core.material import Material
 from core.project import (
     SNR_TARGET_MAX_DB,
@@ -64,8 +71,15 @@ from core.radio import (
     WIFI_STANDARDS,
     RadioConfiguration,
 )
-from core.space import Floor
-from core.wall import Wall
+from core.space import Floor, Space
+from core.wall import (
+    MAX_OPENING_ATTENUATION_DB,
+    MAX_OPENING_LENGTH_M,
+    MIN_OPENING_LENGTH_M,
+    OPENING_KINDS,
+    Opening,
+    Wall,
+)
 
 # Versión del formato. Un incremento implica que hay que migrar/validar.
 SCHEMA_VERSION = 1
@@ -90,6 +104,10 @@ MAX_CLIENTS = 10_000
 MAX_ATTENUATION_DB = 200.0
 MAX_METADATA_DEPTH = 10
 MAX_METADATA_ITEMS = 10_000
+# Fase 8 (decisión BJ): límites de geometría arquitectónica.
+MAX_SPACES = 5_000
+MAX_OPENINGS = 10_000
+MAX_OPENINGS_PER_WALL = 32
 
 
 class ProjectFormatError(Exception):
@@ -292,6 +310,32 @@ def _wall_to_dict(wall: Wall) -> dict[str, Any]:
     }
 
 
+def _space_to_dict(space: Space) -> dict[str, Any]:
+    return {
+        "id": space.id,
+        "name": space.name,
+        "function": space.function,
+        "rect": {
+            "x_m": space.rect.x,
+            "y_m": space.rect.y,
+            "width_m": space.rect.width,
+            "height_m": space.rect.height,
+        },
+        "metadata": dict(space.metadata),
+    }
+
+
+def _opening_to_dict(opening: Opening) -> dict[str, Any]:
+    return {
+        "id": opening.id,
+        "wall_id": opening.wall_id,
+        "start_offset_m": opening.start_offset_m,
+        "end_offset_m": opening.end_offset_m,
+        "kind": opening.kind,
+        "attenuation_override_db": dict(opening.attenuation_override_db),
+    }
+
+
 def _floor_to_dict(floor: Floor) -> dict[str, Any]:
     return {
         "id": floor.id,
@@ -302,6 +346,9 @@ def _floor_to_dict(floor: Floor) -> dict[str, Any]:
         "elevation_m": floor.elevation_m,
         "metadata": dict(floor.metadata),
         "walls": [_wall_to_dict(wall) for wall in floor.walls],
+        # Fase 8 (claves opcionales al LEER; siempre se escriben):
+        "spaces": [_space_to_dict(space) for space in floor.spaces],
+        "openings": [_opening_to_dict(opening) for opening in floor.openings],
     }
 
 
@@ -594,6 +641,139 @@ def _walls_from_list(
     return walls
 
 
+def _rect_from_dict(value: Any, path: str) -> Rect:
+    """Rect de un espacio: dimensiones (0, MAX_DIMENSION_M] y coords acotadas."""
+    data = _require_dict(value, path)
+    x = _require_number(
+        data.get("x_m"), f"{path}.x_m", minimum=-MAX_COORD_M, maximum=MAX_COORD_M
+    )
+    y = _require_number(
+        data.get("y_m"), f"{path}.y_m", minimum=-MAX_COORD_M, maximum=MAX_COORD_M
+    )
+    width = _require_number(
+        data.get("width_m"), f"{path}.width_m",
+        minimum=1e-6, maximum=MAX_DIMENSION_M,
+    )
+    height = _require_number(
+        data.get("height_m"), f"{path}.height_m",
+        minimum=1e-6, maximum=MAX_DIMENSION_M,
+    )
+    try:
+        return Rect(x=x, y=y, width=width, height=height)
+    except ValueError as exc:
+        _fail(f"{path}: {exc}")
+
+
+def _spaces_from_list(value: Any, path: str) -> list[Space]:
+    items = _require_list(value, path, MAX_SPACES)
+    spaces: list[Space] = []
+    for index, item in enumerate(items):
+        item_path = f"{path}[{index}]"
+        data = _require_dict(item, item_path)
+        for field in ("id", "rect"):
+            if field not in data:
+                _fail(f"{item_path}.{field}: falta el campo obligatorio.")
+        spaces.append(
+            Space(
+                id=_require_id(data["id"], f"{item_path}.id"),
+                name=_require_str(data.get("name", ""), f"{item_path}.name"),
+                function=_require_str(
+                    data.get("function", ""), f"{item_path}.function"
+                ),
+                rect=_rect_from_dict(data["rect"], f"{item_path}.rect"),
+                metadata=_validate_metadata(
+                    data.get("metadata"), f"{item_path}.metadata"
+                ),
+            )
+        )
+    _require_unique([space.id for space in spaces], path)
+    return spaces
+
+
+def _openings_from_list(
+    value: Any, path: str, walls_by_id: dict[str, Wall]
+) -> list[Opening]:
+    """Openings de un piso: ``wall_id`` existente + offsets dentro de la pared."""
+    items = _require_list(value, path, MAX_OPENINGS)
+    openings: list[Opening] = []
+    per_wall: dict[str, int] = {}
+    for index, item in enumerate(items):
+        item_path = f"{path}[{index}]"
+        data = _require_dict(item, item_path)
+        for field in ("id", "wall_id", "start_offset_m", "end_offset_m"):
+            if field not in data:
+                _fail(f"{item_path}.{field}: falta el campo obligatorio.")
+        wall_id = _require_id(data["wall_id"], f"{item_path}.wall_id")
+        wall = walls_by_id.get(wall_id)
+        if wall is None:
+            _fail(f"{item_path}.wall_id: pared desconocida {wall_id!r}.")
+        start = _require_number(
+            data["start_offset_m"], f"{item_path}.start_offset_m",
+            minimum=0.0, maximum=MAX_DIMENSION_M,
+        )
+        end = _require_number(
+            data["end_offset_m"], f"{item_path}.end_offset_m",
+            minimum=0.0, maximum=MAX_DIMENSION_M,
+        )
+        if end - start < MIN_OPENING_LENGTH_M:
+            _fail(
+                f"{item_path}: la longitud debe ser ≥ {MIN_OPENING_LENGTH_M:g} m "
+                f"(got {end - start:g})."
+            )
+        if end - start > MAX_OPENING_LENGTH_M:
+            _fail(
+                f"{item_path}: la longitud debe ser ≤ {MAX_OPENING_LENGTH_M:g} m "
+                f"(got {end - start:g})."
+            )
+        wall_length = wall.segment.length
+        if end > wall_length + 1e-6:
+            _fail(
+                f"{item_path}: el hueco excede la pared {wall_id!r} "
+                f"({wall_length:g} m; end={end:g} m)."
+            )
+        kind = _require_str(
+            data.get("kind", "door"), f"{item_path}.kind",
+            max_len=32, allow_empty=False,
+        )
+        if kind not in OPENING_KINDS:
+            _fail(
+                f"{item_path}.kind: tipo no soportado {kind!r} "
+                f"(permitidos: {', '.join(OPENING_KINDS)})."
+            )
+        raw_override = data.get("attenuation_override_db") or {}
+        override_data = _require_dict(raw_override, f"{item_path}.attenuation_override_db")
+        override: dict[str, float] = {}
+        for band_id, raw_loss in override_data.items():
+            if not isinstance(band_id, str) or not band_id:
+                _fail(
+                    f"{item_path}.attenuation_override_db: las claves deben "
+                    "ser band ids no vacíos."
+                )
+            override[band_id] = _require_number(
+                raw_loss,
+                f"{item_path}.attenuation_override_db.{band_id}",
+                minimum=0.0, maximum=MAX_OPENING_ATTENUATION_DB,
+            )
+        per_wall[wall_id] = per_wall.get(wall_id, 0) + 1
+        if per_wall[wall_id] > MAX_OPENINGS_PER_WALL:
+            _fail(
+                f"{path}: la pared {wall_id!r} tiene más de "
+                f"{MAX_OPENINGS_PER_WALL} openings."
+            )
+        openings.append(
+            Opening(
+                id=_require_id(data["id"], f"{item_path}.id"),
+                wall_id=wall_id,
+                start_offset_m=start,
+                end_offset_m=end,
+                kind=kind,
+                attenuation_override_db=override,
+            )
+        )
+    _require_unique([opening.id for opening in openings], path)
+    return openings
+
+
 def _floors_from_list(
     value: Any, path: str, materials_by_id: dict[str, Material]
 ) -> list[Floor]:
@@ -624,12 +804,20 @@ def _floors_from_list(
         walls = _walls_from_list(
             data["walls"], f"{item_path}.walls", materials_by_id
         )
+        walls_by_id = {wall.id: wall for wall in walls}
+        # Fase 8 (claves opcionales; ausentes ⇒ listas vacías — decisión BE):
+        spaces = _spaces_from_list(data.get("spaces", []), f"{item_path}.spaces")
+        openings = _openings_from_list(
+            data.get("openings", []), f"{item_path}.openings", walls_by_id
+        )
         floors.append(
             Floor(
                 id=_require_id(data["id"], f"{item_path}.id"),
                 name=_require_str(data.get("name", ""), f"{item_path}.name"),
                 level=_require_int(data.get("level", 0), f"{item_path}.level"),
                 walls=walls,
+                spaces=spaces,
+                openings=openings,
                 elevation_m=_require_number(
                     data.get("elevation_m", 0.0),
                     f"{item_path}.elevation_m",

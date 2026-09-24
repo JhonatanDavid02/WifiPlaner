@@ -658,6 +658,161 @@ empíricamente (sondas de parser, invariantes y residuales).
 
 ---
 
+## Fase 8 — Geometría arquitectónica: spaces + openings
+
+### Decisión BE — El schema sigue siendo **v1** con claves opcionales (revisión de AK)
+
+- **Decisión:** F8 añade `floors[].spaces[]` y `floors[].openings[]`
+  como claves **opcionales** dentro de `schema_version = 1` (ausentes ⇒
+  listas vacías, misma técnica que AZ en F7). **No** se crea
+  `schema_version = 2`. Con esto se **revisa** la previsión de la
+  decisión AK («si el editor las incorpora, el esquema crece a v2»):
+  tras auditar, v2 queda reservado para cambios *breaking*.
+- **Análisis (Opción A = extender v1 · Opción B = v2):**
+  1. *Compatibilidad F6/F6.1/F7:* A la abre todo sin migración (clave
+     ausente ⇒ `[]`). B exige lector dual o migración `v1 → v2 → Project`
+     solo para un cambio que es aditivo.
+  2. *Semántica de versionado:* el dispatcher actual hace coincidencia
+     **exacta** (`version != SCHEMA_VERSION ⇒ error`); subir a 2
+     rompería **todos** los archivos F1–F7 salvo mantener además el
+     lector v1 — complejidad sin beneficio para el usuario.
+  3. *Contrato del lector v1 ya tolera claves desconocidas:* existe test
+     `test_unknown_keys_ignored_same_version` — una app F7 abre un
+     archivo F8 e ignora `spaces`/`openings` (mismo patrón que F6
+     ignorando las claves F7).
+  4. *Evidencia de tests congelados:* hay tests **que F8 prohíbe
+     modificar** que fijan `SCHEMA_VERSION == 1`,
+     `raw["schema_version"] == SCHEMA_VERSION == 1` y
+     `raw["schema_version"] == 1` (`test_persistence.py:195`,
+     `test_rf_extension.py:609,679`): bajo las reglas de F8, v2
+     implicaría reescribir tests anteriores.
+  5. *Mantenibilidad:* v2 debería reservarse para renombres, cambios
+     de tipo, campos **obligatorios** nuevos o cambio de semántica —
+     ninguno ocurre en F8.
+- **Razón:** ninguna propiedad de un campo existente cambia; la
+  adición cumple exactamente el patrón ya aceptado en AZ. El caso
+  teórico en contra (una app F7 que re-guarda un F8 y descarte los
+  espacios) es el mismo que F7 creó hacia F6 y solo aplica a editors
+  de versiones distintas conviviendo: fuera de alcance de una
+  herramienta de versión única.
+
+### Decisión BF — `Opening` muro-relativo (Modelo A), sin segmento flotante
+
+- **Decisión:** `core.wall.Opening` pasa a ser
+  `id + wall_id + start_offset_m + end_offset_m + kind +
+  attenuation_override_db`. Se **elimina** el campo `segment` (y el
+  nunca usado `blocks_signal`): la geometría del hueco se deriva con
+  `opening_segment(wall, opening)` (helper puro en `core/wall.py`).
+- **Análisis de modelos:** A (`wall_id` + posición relativa), B
+  (segmento independiente vinculado), C (ya existente). Evidencia:
+  `engine/intersection.py` ya calcula `u` = parámetro normalizado sobre
+  la pared; evaluar el hueco en ese mismo espacio (metros desde
+  `wall.start`) es determinista y reutiliza la intersección sin
+  proyecciones nuevas. El `segment` actual del dominio **no tiene ni
+  productor ni consumidor** (scaffolding muerto: ni tests, ni engine, ni
+  UI, ni persistencia lo usan) — dos fuentes de verdad (segmento +
+  offsets) crearían la validación duplicada que la auditoría prohíbe.
+- **Razón:** 🟡 refactor de un scaffolding sin consumidores que
+  completa la intención de la clase («Hueco **en una pared**»). `Space`
+  no se toca: su `Rect` ya es la representación correcta.
+
+### Decisión BG — Semántica RF del hueco: **reemplazo**, nunca suma
+
+- **Decisión:** si el cruce cae dentro de la unión de los openings de
+  la pared, la pérdida de **ese cruce** es
+  `attenuation_override_db.get(banda, 0.0)` (vacío ⇒ 0 dB) y **sustituye**
+  —no suma— a la atenuación del material. Reglas:
+  - *Límite cerrado:* un cruce en `start − ε ≤ d ≤ end + ε` pertenece
+    al opening (los extremos son del hueco; ε = `EPSILON_GEOMETRY`).
+  - *Unión determinista:* si varios openings cubren el cruce, el
+    orden canónico `(start_offset_m, id)` elige cuál aporta el
+    override; el resultado es independiente del orden de inserción.
+  - *Sin consulta de material ⇒ sin dato inventado:* un cruce en hueco
+    no llama a `wall_attenuation_db`, así que **6 GHz atraviesa un
+    hueco con 0 dB**; un cruce **sólido** sigue lanzando
+    `MaterialAttenuationError` exactamente que antes.
+  - El cruce sigue registrándose en `walls_crossed` con `loss_db=0` y
+    `opening_id` (informativo; `crossings` cuenta atravesamientos de
+    pared, no materiales).
+- **Razón:** imposible por construcción producir
+  `pared + opening` (un único valor por cruce). La distinción
+  door/window queda como **metadato visual** (`kind`), no como clase RF
+  — no se inventan materiales por tipo de hueco.
+
+### Decisión BH — `Space` es geometría + organización en F8 (sin RF)
+
+- **Decisión:** F8 implementa Spaces como regiones identificables
+  (`id`, `name`, `function`, `rect`, `metadata`) con CRUD en sesión,
+  dibujo, selección y persistencia. **No** participan en
+  `trace_walls` ni en ninguna fórmula: crear/editar/eliminar un
+  espacio marca `dirty` pero **no** invalida el heatmap en la sesión.
+- **Razón:** ninguna razón sólida convierte una zona semántica en
+  atenuación (los muros entre zonas ya modelan la RF). Meter comportamiento
+  RF en `Space` «porque se puede» acoplaría dominio a fórmulas y
+  contradice el principio de la fase. El `id_space_from/to` de `Wall`
+  queda como referencia opcional sin uso en F8 (documentado, sin
+  romperlo).
+
+### Decisión BI — Interacción mínima (sin CAD, sin editar endpoints de paredes)
+
+- **Decisión:**
+  - *Espacios:* herramienta `Espacio` (radio + tecla `e`) con patrón de
+    dos clics idéntico al de pared (esquina → esquina), esquinas
+    recortadas al piso, tamaño mínimo 0.1 m; selección por
+    `rect.contains` **detrás** de todo lo demás; edición de
+    nombre/función desde propiedades; Delete elimina.
+  - *Aperturas:* **no** hay herramienta nueva. Con una pared
+    seleccionada, propiedades muestra sus openings y los botones
+    «+ Puerta» / «+ Ventana» (creación centrada con longitud por
+    defecto, recortada a la pared). Seleccionar un opening = clic sobre
+    su tramo (hit-test openings **antes** que paredes); edición de
+    `kind`/offset/longitud desde propiedades; Delete elimina.
+  - *Endpoints de paredes:* siguen sin editarse; los offsets métricos
+    hacen innecesario mover extremos.
+- **Razón:** reutiliza los patrones exactos del editor (drag de pared,
+  hit-test por distancia, panel de propiedades) en vez de construir un
+  sub-CAD. Quedan fuera snaps de apertura, manijas de redimensionado,
+  layers y booleanos (explícitamente fuera de alcance).
+
+### Decisión BJ — Persistencia de F8 dentro de `floors`, con límites duros
+
+- **Decisión:** `floors[]` gana `spaces` y `openings` (siempre
+  escritos; ausentes ⇒ `[]`). Validación por capa:
+  - *Dominio (`Opening.__post_init__`):* offsets finitos,
+    `0 ≤ start`, `end − start ≥ MIN_OPENING_LENGTH_M (0.01)`,
+    `kind ∈ {door, window, pass_through}`, overrides finitos en
+    `[0, 200] dB`.
+  - *Persistencia:* `wall_id` debe existir **en el mismo piso**,
+    `end ≤ longitud de la pared + ε` (rechaza «fuera de la pared»),
+    únicos por tipo; límites: `MAX_SPACES = 5000`,
+    `MAX_OPENINGS = 10000` por piso, `MAX_OPENINGS_PER_WALL = 32`,
+    rects con dimensiones `(0, MAX_DIMENSION_M]` y coordenadas
+    acotadas; metadata con el validador existente; sin NaN/Infinity.
+  - *Sesión:* recorte/validación al crear (la entrada del usuario no
+    puede producir un opening inválido) y validación al editar.
+  - Espacios **no** se exigen dentro del rect del piso (un
+    `set_floor_dimensions` menor no dejaría el proyecto inguardable —
+    invariante AM evitado); su creación sí recorta al piso.
+- **Razón:** mismas defensas F6.1 (tipos estrictos, referencias
+  existentes, listas acotadas, escritura atómica) aplicadas a las dos
+  entidades nuevas; la asimetría espacio/pared es deliberada porque los
+  espacios no son RF.
+
+### Decisión BK — Constantes de creación en `core`, no números mágicos en UI
+
+- **Decisión:** `core/wall.py` centraliza
+  `OPENING_KINDS`, `MIN_OPENING_LENGTH_M (0.01)`,
+  `MAX_OPENING_LENGTH_M (1000)`, `MAX_OPENING_ATTENUATION_DB (200)`,
+  `DEFAULT_OPENING_LENGTH_M = {"door": 0.9, "window": 1.2,
+  "pass_through": 1.0}`; `core/space.py` añade
+  `MIN_SPACE_SIZE_M (0.1)`. La UI y la persistencia referencian
+  estas constantes.
+- **Razón:** misma regla de F7 (defaults centralizados en `core/`,
+  YAML/config solo los referencia si los necesita): el editor no
+  hardcodea longitudes de puerta ni tamaños mínimos.
+
+---
+
 ## Discrepancias encontradas (no resueltas silenciosamente)
 
 ### 1. Distancias `d_max` contradictorias

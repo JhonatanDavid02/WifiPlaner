@@ -1,4 +1,8 @@
-"""Panel de propiedades del elemento seleccionado + resumen de simulación."""
+"""Panel de propiedades del elemento seleccionado + resumen de simulación.
+
+Fase 8: añade edición de espacios (nombre/función) y de aperturas
+(tipo/offsets) + creación de aperturas desde la pared seleccionada.
+"""
 
 from __future__ import annotations
 
@@ -6,6 +10,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 from typing import Callable
 
+from core.wall import OPENING_KINDS
 from ui.session import EditorSession, SelectionKind
 
 
@@ -65,7 +70,84 @@ class PropertiesPanel(ttk.Frame):
         ttk.Button(wall_box, text="Aplicar espesor", command=self._thickness_apply).grid(
             row=2, column=0, columnspan=2, sticky="ew", pady=(6, 0)
         )
+        # Fase 8: openings creados desde la pared seleccionada (BI).
+        ttk.Label(wall_box, text="Aperturas:").grid(row=3, column=0, sticky="w", pady=(6, 0))
+        self._opening_count_var = tk.StringVar(value="0")
+        ttk.Label(wall_box, textvariable=self._opening_count_var).grid(
+            row=3, column=1, sticky="w", pady=(6, 0)
+        )
+        btn_row = ttk.Frame(wall_box)
+        btn_row.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        self._add_door_btn = ttk.Button(
+            btn_row, text="+ Puerta", command=lambda: self._add_opening("door")
+        )
+        self._add_door_btn.pack(side="left", expand=True, fill="x", padx=(0, 3))
+        self._add_window_btn = ttk.Button(
+            btn_row, text="+ Ventana", command=lambda: self._add_opening("window")
+        )
+        self._add_window_btn.pack(side="left", expand=True, fill="x", padx=(3, 0))
         wall_box.columnconfigure(1, weight=1)
+
+        # --- Espacio (fase 8: zonas, sin RF — BH) ---
+        space_box = ttk.LabelFrame(self, text="Espacio", padding=8)
+        space_box.pack(fill="x", padx=8, pady=4)
+
+        ttk.Label(space_box, text="Nombre:").grid(row=0, column=0, sticky="w")
+        self._space_name_var = tk.StringVar()
+        self._space_name_entry = ttk.Entry(
+            space_box, textvariable=self._space_name_var, width=18
+        )
+        self._space_name_entry.grid(row=0, column=1, sticky="ew", pady=2)
+
+        ttk.Label(space_box, text="Función:").grid(row=1, column=0, sticky="w")
+        self._space_function_var = tk.StringVar()
+        self._space_function_entry = ttk.Entry(
+            space_box, textvariable=self._space_function_var, width=18
+        )
+        self._space_function_entry.grid(row=1, column=1, sticky="ew", pady=2)
+
+        self._space_apply_btn = ttk.Button(
+            space_box, text="Aplicar espacio", command=self._space_apply
+        )
+        self._space_apply_btn.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        space_box.columnconfigure(1, weight=1)
+
+        # --- Apertura (fase 8: offsets métricos sobre la pared — BG) ---
+        opening_box = ttk.LabelFrame(self, text="Apertura", padding=8)
+        opening_box.pack(fill="x", padx=8, pady=4)
+
+        ttk.Label(opening_box, text="Tipo:").grid(row=0, column=0, sticky="w")
+        self._opening_kind_var = tk.StringVar()
+        self._opening_kind_combo = ttk.Combobox(
+            opening_box,
+            textvariable=self._opening_kind_var,
+            values=list(OPENING_KINDS),
+            state="readonly",
+            width=16,
+        )
+        self._opening_kind_combo.grid(row=0, column=1, sticky="ew", pady=2)
+
+        ttk.Label(opening_box, text="Inicio (m):").grid(row=1, column=0, sticky="w")
+        self._opening_start_var = tk.StringVar()
+        self._opening_start_entry = ttk.Entry(
+            opening_box, textvariable=self._opening_start_var, width=10
+        )
+        self._opening_start_entry.grid(row=1, column=1, sticky="ew", pady=2)
+
+        ttk.Label(opening_box, text="Fin (m):").grid(row=2, column=0, sticky="w")
+        self._opening_end_var = tk.StringVar()
+        self._opening_end_entry = ttk.Entry(
+            opening_box, textvariable=self._opening_end_var, width=10
+        )
+        self._opening_end_entry.grid(row=2, column=1, sticky="ew", pady=2)
+
+        self._opening_apply_btn = ttk.Button(
+            opening_box, text="Aplicar apertura", command=self._opening_apply
+        )
+        self._opening_apply_btn.grid(
+            row=3, column=0, columnspan=2, sticky="ew", pady=(6, 0)
+        )
+        opening_box.columnconfigure(1, weight=1)
 
         # --- Coordenadas AP / Cliente ---
         pos_box = ttk.LabelFrame(self, text="Posición (m)", padding=8)
@@ -206,6 +288,84 @@ class PropertiesPanel(ttk.Frame):
                 self._thickness_entry.configure(state="disabled")
                 self._x_var.set(f"{client.position.x:.3f}")
                 self._y_var.set(f"{client.position.y:.3f}")
+        elif selection.kind == SelectionKind.SPACE:
+            space = session.selected_space()
+            if space:
+                rect = space.rect
+                self._set_text(
+                    self._info,
+                    f"Espacio\n\n"
+                    f"ID: {space.id}\n"
+                    f"Nombre: {space.name}\n"
+                    f"Función: {space.function or '—'}\n"
+                    f"Rect: ({rect.x:.2f}, {rect.y:.2f}) + "
+                    f"{rect.width:.2f} × {rect.height:.2f} m",
+                )
+                self._material_combo.configure(state="disabled")
+                self._thickness_entry.configure(state="disabled")
+                self._x_var.set("")
+                self._y_var.set("")
+        elif selection.kind == SelectionKind.OPENING:
+            opening = session.selected_opening()
+            if opening:
+                wall = session.find_wall(opening.wall_id)
+                wall_len = wall.segment.length if wall else 0.0
+                self._set_text(
+                    self._info,
+                    f"Apertura ({opening.kind})\n\n"
+                    f"ID: {opening.id}\n"
+                    f"Pared: {opening.wall_id} ({wall_len:.2f} m)\n"
+                    f"Tramo: [{opening.start_offset_m:.2f}, "
+                    f"{opening.end_offset_m:.2f}] m\n"
+                    f"Longitud: {opening.length_m:.2f} m",
+                )
+                self._material_combo.configure(state="disabled")
+                self._thickness_entry.configure(state="disabled")
+                self._x_var.set("")
+                self._y_var.set("")
+
+        # --- Estados de los controles Fase 8 (recalculados en cada refresh) ---
+        kind = selection.kind if selection is not None else None
+        space = session.selected_space() if kind == SelectionKind.SPACE else None
+        opening = (
+            session.selected_opening() if kind == SelectionKind.OPENING else None
+        )
+        wall = session.selected_wall() if kind == SelectionKind.WALL else None
+
+        if space is not None:
+            self._space_name_var.set(space.name)
+            self._space_function_var.set(space.function)
+            self._space_name_entry.configure(state="normal")
+            self._space_function_entry.configure(state="normal")
+            self._space_apply_btn.configure(state="normal")
+        else:
+            self._space_name_entry.configure(state="disabled")
+            self._space_function_entry.configure(state="disabled")
+            self._space_apply_btn.configure(state="disabled")
+
+        if opening is not None:
+            self._opening_kind_var.set(opening.kind)
+            self._opening_start_var.set(f"{opening.start_offset_m:.3f}")
+            self._opening_end_var.set(f"{opening.end_offset_m:.3f}")
+            self._opening_kind_combo.configure(state="readonly")
+            self._opening_start_entry.configure(state="normal")
+            self._opening_end_entry.configure(state="normal")
+            self._opening_apply_btn.configure(state="normal")
+        else:
+            self._opening_kind_combo.configure(state="disabled")
+            self._opening_start_entry.configure(state="disabled")
+            self._opening_end_entry.configure(state="disabled")
+            self._opening_apply_btn.configure(state="disabled")
+
+        if wall is not None:
+            count = len(session.openings_for_wall(wall.id))
+            self._opening_count_var.set(str(count))
+            self._add_door_btn.configure(state="normal")
+            self._add_window_btn.configure(state="normal")
+        else:
+            self._opening_count_var.set("—")
+            self._add_door_btn.configure(state="disabled")
+            self._add_window_btn.configure(state="disabled")
 
         if session.last_simulation is not None or session.last_simulation_error:
             self._set_text(self._sim_text, session.simulation_summary_text())
@@ -266,5 +426,58 @@ class PropertiesPanel(ttk.Frame):
                 return
         except (KeyError, ValueError) as exc:
             messagebox.showerror("Posición", str(exc))
+            return
+        self._on_changed()
+
+    # ------------------------------------------------------------------
+    # Fase 8: espacios y aperturas (solo CRUD vía sesión; nada de RF aquí)
+    # ------------------------------------------------------------------
+
+    def _space_apply(self) -> None:
+        space = self._session.selected_space()
+        if not space:
+            return
+        try:
+            self._session.set_space_properties(
+                space.id,
+                self._space_name_var.get(),
+                self._space_function_var.get(),
+            )
+        except (KeyError, ValueError) as exc:
+            messagebox.showerror("Espacio", str(exc))
+            return
+        self._on_changed()
+
+    def _opening_apply(self) -> None:
+        session = self._session
+        opening = session.selected_opening()
+        if not opening:
+            return
+        try:
+            start = float(
+                self._opening_start_var.get().strip().replace(",", ".")
+            )
+            end = float(self._opening_end_var.get().strip().replace(",", "."))
+        except ValueError:
+            messagebox.showerror("Apertura", "Offsets inválidos (metros).")
+            return
+        kind = self._opening_kind_var.get()
+        try:
+            session.set_opening_offsets(opening.id, start, end)
+            if kind != opening.kind:
+                session.set_opening_kind(opening.id, kind)
+        except (KeyError, ValueError) as exc:
+            messagebox.showerror("Apertura", str(exc))
+            return
+        self._on_changed()
+
+    def _add_opening(self, kind: str) -> None:
+        wall = self._session.selected_wall()
+        if not wall:
+            return
+        try:
+            self._session.add_opening(wall.id, kind)
+        except (KeyError, ValueError) as exc:
+            messagebox.showerror("Apertura", str(exc))
             return
         self._on_changed()

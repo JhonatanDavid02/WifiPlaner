@@ -183,6 +183,41 @@ No hay `L_ref` configurada para `band_6` en el catálogo V1.
 Consultar atenuación lanza `MaterialAttenuationError`. No se inventan
 valores ni se convierte silenciosamente 5 → 6 GHz.
 
+### Openings (Fase 8): reemplazo en el hueco
+
+Un `Opening` (puerta / ventana / pass-through) vive sobre una pared con
+offsets métricos desde `wall.segment.start` (decisión BF). La posición
+del cruce sobre la pared es `d = u × longitud_pared`, con `u` el
+parámetro del cruce devuelto por `engine.intersection`.
+
+```
+L_cruce = L_wall(banda, espesor)   si d ∉ ningún opening de la pared
+        = override(banda) o 0 dB   si d ∈ algún opening (reemplazo)
+```
+
+- **Semántica de reemplazo (decisión BG):** el override **sustituye**
+  a la atenuación del material; jamás se suman (`L_material +
+  L_override` no existe).
+- **Unión con intervalo cerrado:** un cruce cuenta como hueco si
+  `start − ε ≤ d ≤ end + ε` con `ε = EPSILON_GEOMETRY = 1e-9`
+  (los extremos pertenecen al hueco).
+- **Orden canónico `(start, id)`:** con openings solapados gana el
+  primero en ese orden (resultado independiente del orden de
+  inserción; `group_openings_by_wall`).
+- **Override por banda:** `opening.attenuation_override_db[band_id]`;
+  si la banda no está en el dict ⇒ **0 dB** (sección abierta).
+- **6 GHz:** un cruce en hueco no consulta el catálogo de materiales ⇒
+  0 dB (o el override si existe). Los cruces **sólidos** siguen
+  lanzando `MaterialAttenuationError` como antes.
+- El `WallCrossing`/`CrossingLoss` del cruce lleva `opening_id`
+  (None si es sección sólida), de modo que el detalle del link
+  budget identifica el hueco.
+- Sin `openings` (o lista vacía) el resultado es **idéntico** al de
+  Fase 2–7: regresión garantizada.
+
+Implementación: `engine.obstacles.trace_walls`,
+`core.wall.group_openings_by_wall`.
+
 Implementación: `engine.obstacles.wall_attenuation_db`,
 `engine.obstacles.trace_walls`.
 
