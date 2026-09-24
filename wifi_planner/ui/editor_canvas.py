@@ -73,6 +73,12 @@ class EditorCanvas(tk.Canvas):
         self._heatmap_image = None
         self._heatmap_photo = None
 
+    def reset_interaction(self) -> None:
+        """Limpia el estado transitorio del puntero (cambio de documento)."""
+        self._drag_ap_id = None
+        self._drag_client_id = None
+        self._preview_end = None
+
     def draw_heatmap(self, image) -> None:
         """Dibuja la imagen Pillow del heatmap bajo las entidades.
 

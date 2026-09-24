@@ -440,6 +440,113 @@ discrepancia se resolvió de forma silenciosa.
 
 ---
 
+## Fase 6.1 — Endurecimiento de persistencia
+
+Auditoría de F6 sin cambiar el contrato del formato: `schema_version`
+sigue siendo **1**. Solo se corrigieron debilidades comprobadas
+empíricamente (sondas de parser, invariantes y residuales).
+
+### Decisión AL — El documento exige ≥ 1 piso
+
+- **Decisión:** `project.floors` debe contener al menos un piso;
+  una lista vacía ⇒ `ProjectFormatError` al cargar, y `save_project`
+  rechaza (sin escribir) un proyecto sin pisos.
+- **Problema previo:** un archivo sin pisos se abría y el editor
+  creaba un piso “lazy” al primer acceso, sin marcar `dirty` → la
+  memoria divergía del disco con el proyecto aparentemente limpio.
+- **Razón:** el editor v1 no puede operar sin piso; exigirlo en
+  validación mantiene simétrico guardar/cargar (objetivo: nunca se
+  escribe algo que no se puede abrir).
+
+### Decisión AM — Invariante «dimensiones + resolución ⇒ grid»
+
+- **Decisión:** `set_floor_dimensions` comprueba con un `CoverageGrid`
+  de sondeo que la resolución **actual** siga produciendo un grid
+  usable; si no, revierte y lanza `ValueError` (el diálogo lo muestra).
+  El invariante ya estaba al cambiar resolución (F6); ahora se
+  mantiene en **ambos** cambios de entrada.
+- **Problema previo:** dimensiones gigantes (p. ej. 10000×10000 m con
+  res. 0.5 m) se aplicaban sin más y dejaban el proyecto **inguardable**
+  (la revalidación de `save` fallaba tarde) y sin heatmap.
+- **Razón:** un proyecto editable debe ser siempre simulable y
+  guardable; el error aparece en el momento de la edición.
+
+### Decisión AN — Banda validada antes de mutar + dirty en `run_*`
+
+- **Decisión:** `run_heatmap`/`run_simulation` validan la banda con
+  `project.get_band()` **antes** de asignar `session.band_id`; un
+  cambio real de banda (aunque ocurra vía argumento de `run_*`) marca
+  `dirty`.
+- **Problema previo:** la asignación ocurría antes de validar → una
+  banda desconocida dejaba `band_id` corrupto en la sesión; y el
+  cambio de configuración persistible no se reflejaba en `dirty`.
+- **Relación con AJ:** ejecutar una simulación **con la banda activa**
+  sigue sin marcar `dirty` (el resultado no se persiste); lo que marca
+  es el cambio de la banda en sí, que sí se persiste en `EditorState`.
+
+### Decisión AO — Escritura durable: `.tmp` + `fsync` + `replace`
+
+- **Decisión:** la escritura atómica de F6 ahora hace `flush` +
+  `os.fsync` sobre el temporal **antes** de `os.replace`.
+- **Razón:** sin `fsync`, un corte de energía justo después del
+  `replace` puede dejar un archivo vacío/incompleto en disco. El
+  journaling complejo y el `fsync` de directorio se descartan (no
+  portable en Windows).
+
+### Decisión AP — El parser JSON también es entrada no confiable
+
+- **Decisión:** en `load_project`, además de `JSONDecodeError`, los
+  `ValueError`/`RecursionError` que pueda lanzar `json.loads` (p. ej.
+  entero con > 4300 dígitos, anidamiento excesivo) se convierten en
+  `ProjectFormatError`; `document_from_dict` comparte esa red.
+- **Problema previo:** esos errores escapaban del manejo de la UI
+  (que solo captura `ProjectFormatError`/`OSError`) y reventaban.
+- **Razón:** “archivo = entrada no confiable” incluye la fase de
+  parseo, no solo la validación del árbol resultante.
+
+### Decisión AQ — Punto de extensión por versión (sin migraciones)
+
+- **Decisión:** la lectura se estructura como
+  `detectar schema_version → _document_v1(...)`; existe **solo** el
+  lector v1 y cualquier otra versión sigue produciendo error claro.
+- **Clasificación:** 🟢 (estructura interna; contratos y mensajes
+  idénticos, sin nuevas capacidades).
+- **Razón:** F6.1 solo deja preparada la futura ruta
+  `load → detectar versión → migrar → validar → construir` sin
+  implementarla ni obligar a reconstruir la persistencia en F7+.
+
+### Decisión AR — Sensibilidad de radio acotada como la de clientes
+
+- **Decisión:** `radio.sensitivity_dbm` se valida en `[-200, 0]` dBm,
+  exactamente el rango ya usado para `ClientDevice.sensitivity_dbm`.
+- **Razón:** la misma magnitud física debe tener la misma regla en
+  ambos lugares (consistencia, no límite nuevo arbitrario).
+- **No acotados a propósito:** `frequency_mhz`, `p_tx_dbm` y ganancias
+  solo exigen número finito: son absurdos pero no rompen cálculo ni
+  validación, y acotarlos añadiría reglas sin beneficio (F6.1 evita
+  sobreingeniería).
+
+### Decisión AS — Sin residuales de UI al cambiar de documento
+
+- **Decisión:** `_after_document_change` limpia la imagen del heatmap
+  del canvas y el estado de arrastre (`reset_interaction`) además del
+  reset de sesión de F6.
+- **Problema previo:** `render_project` re-colocaba el heatmap del
+  proyecto anterior sobre el recién abierto hasta el próximo cálculo.
+- **Razón:** “abrir B no debe mostrar nada de A” también aplica a la
+  capa visual, no solo al modelo.
+
+### Decisión AT — Tolerancias documentadas del formato v1
+
+- **Decisión:** dentro de `schema_version = 1` se **ignoran** claves
+  desconocidas (compatibilidad futura dentro de la misma versión) y
+  `editor: null` se trata como sección ausente (defaults).
+- **Razón:** hacerlo explícito evita que un lector futuro “arregle”
+  estos comportamientos y rompa archivos existentes; la evolución real
+  pasa por subir `schema_version`, no por cambiar reglas en v1.
+
+---
+
 ## Discrepancias encontradas (no resueltas silenciosamente)
 
 ### 1. Distancias `d_max` contradictorias

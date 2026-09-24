@@ -6,10 +6,12 @@ Wi-Fi Planner es un sistema de diseño y simulación visual de redes Wi-Fi.
 La V1 establece la **fundación**: dominio, geometría en metros, motor RF
 centralizado, configuración centralizada, pruebas y documentación.
 
-**Fase 6 (actual):** persistencia local de proyectos en **JSON**.
-El `Project` es la única fuente de verdad editable: se guarda a archivo
-y se regenera todo lo derivado (simulación, heatmap, UI) al abrir.
-La nueva capa `persistence/` aísla el formato del dominio y de la UI.
+**Fase 6 + 6.1 (actual):** persistencia local de proyectos en **JSON**,
+auditada y endurecida (F6.1). El `Project` es la única fuente de verdad
+editable: se guarda a archivo y se regenera todo lo derivado
+(simulación, heatmap, UI) al abrir. La capa `persistence/` aísla el
+formato del dominio y de la UI, trata el archivo como **entrada no
+confiable** (incluido el parser) y escribe de forma atómica y durable.
 
 **Fase 5:** editor 2D + **heatmap multi-AP** sobre el mismo
 `CoverageGrid`. Cada AP se evalúa con `simulate_coverage` y se combinan
@@ -107,15 +109,17 @@ al engine / `EditorSession`.
 | `panels/toolbar.py` | Herramienta, banda, resolución, toggle heatmap, dimensiones, selector de AP |
 | `panels/properties.py` | Propiedades del elemento + resumen simulación/heatmap |
 
-### `persistence/` (Fase 6)
+### `persistence/` (Fase 6, endurecida en 6.1)
 Representación externa del proyecto en **JSON**. Convierte
 `Project → dict → archivo` y `archivo → Project` con validación estricta
-(esquema, límites, NaN, ids únicos, material referenciado). No conoce
+(esquema, límites, NaN/Inf, booleans ≠ números, ids únicos, material
+referenciado, ≥ 1 piso). El parser también se trata como no confiable
+(`ValueError`/`RecursionError` ⇒ `ProjectFormatError`). No conoce
 Tkinter ni simula; el dominio (`core/`) no sabe que existen archivos.
 
 | Módulo | Responsabilidad |
 |---|---|
-| `json_project_repository.py` | `save_project` / `load_project`, `project_to_dict` / `project_from_dict`, `schema_version`, `ProjectFormatError`, escritura atómica |
+| `json_project_repository.py` | `save_project` (revalida + `.tmp` + `fsync` + `os.replace`) / `load_project`, `project_to_dict` / `project_from_dict`, dispatch por `schema_version` (`_document_v1`; punto de extensión para futuras versiones), `ProjectFormatError`, límites |
 | `EditorState` | Preferencias persistibles del editor: banda activa y resolución del grid |
 
 ### `config/`
@@ -200,15 +204,30 @@ trace_walls(source, target, walls, band_id) -> ObstacleTraceResult
 - El archivo guarda **solo** el `Project` + `EditorState` (banda y
   resolución). Al abrir: `JSON → Project → simulate → UI`.
 - `schema_version` obligatoria; incompatible ⇒ `ProjectFormatError`
-  (error visible, proyecto actual intacto, sin carga parcial).
+  (error visible, proyecto actual intacto, sin carga parcial). El
+  dispatch por versión (`_document_v1`) es el punto donde una futura
+  v2 añadiría su lector/migración (F6.1 solo deja la preparación).
 - Coordenadas siempre en metros (`x_m`/`y_m`); los píxeles solo existen
   en `Viewport`.
 - Las paredes referencian materiales por id dentro del propio catálogo
-  del proyecto (el archivo es autocontenido).
-- Escritura atómica (`.tmp` + `os.replace`) y revalidación previa:
-  no se deja un archivo que la app no pueda abrir.
+  del proyecto (el archivo es autocontenido); se exige **≥ 1 piso**
+  (simetría guardar/cargar).
+- Escritura atómica y durable (`.tmp` + `fsync` + `os.replace`) y
+  revalidación previa: no se deja un archivo que la app no pueda abrir,
+  y un fallo de escritura no destruye el archivo anterior.
+- Todo el JSON es **entrada no confiable**: validación de tipos
+  (booleanos nunca pasan por números), NaN/Inf, límites de dimensiones,
+  coordenadas, espesores, listas, strings, metadata, resolución del
+  grid y tamaño de archivo; incluso los errores del parser
+  (`ValueError`/`RecursionError`) se convierten en `ProjectFormatError`.
+- Invariante de edición: **dimensiones + resolución ⇒ grid usable** se
+  comprueba al cambiar cualquiera de los dos ⇒ el proyecto siempre es
+  simulable y guardable.
+- Al cambiar de documento la UI se limpia por completo (heatmap,
+  selección, herramienta, arrastre, selector de AP): no queda estado
+  residual del proyecto anterior.
 - **No** se persisten: selección, herramienta, heatmap, resultados de
-  simulación ni imágenes (se regeneran; ver `docs/decisions.md` AB–AK).
+  simulación ni imágenes (se regeneran; ver `docs/decisions.md` AB–AT).
 
 ## Unidades
 
@@ -233,6 +252,9 @@ Los píxeles **no existen** en `core/` ni `engine/`.
   selector Todos/AP, dominancia por AP, estadísticas combinadas.
 - **Fase 6 (hecha):** persistencia local JSON — `Project` ↔ archivo,
   schema versionado, guardar/abrir/nuevo, dirty state.
+- **Fase 6.1 (hecha):** endurecimiento de persistencia — parser duro,
+  límites extremos, invariante dims/resolución, simetría guardar/cargar,
+  fsync, limpieza de estado residual, dispatch por versión.
 - **Fase 7:** por definir (p. ej. huecos/`Opening`, espacios `Space`,
   canales).
 - **Futuro 3D:** `Floor.elevation_m` ya existe; geometría 2D no cambia.

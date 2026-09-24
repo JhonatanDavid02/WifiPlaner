@@ -173,6 +173,10 @@ class WifiPlannerApp(tk.Tk):
         self.toolbar._tool_var.set(self.session.tool.value)
         self._refresh_ap_selector()
         self.properties.refresh()
+        # Sin residuo del documento anterior: el heatmap (imagen) y el
+        # estado de arrastre pertenecen al proyecto que se acaba de salir.
+        self.canvas.clear_heatmap()
+        self.canvas.reset_interaction()
         self.render_project()
         self._update_status_coords(None, None)
         self._update_title()

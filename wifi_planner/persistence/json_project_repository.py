@@ -373,11 +373,19 @@ def _radio_from_dict(value: Any, path: str) -> RadioConfiguration:
         "sensitivity_dbm",
         "fade_margin_db",
     )
+    # Límites físicos por campo (solo donde el dominio ya está acotado:
+    # la sensibilidad de clientes usa exactamente el mismo rango).
+    limits: dict[str, tuple[float | None, float | None]] = {
+        "sensitivity_dbm": (-200.0, 0.0),
+    }
     kwargs: dict[str, float] = {}
     for field in fields:
         if field not in data:
             _fail(f"{path}.{field}: falta el campo obligatorio.")
-        kwargs[field] = _require_number(data[field], f"{path}.{field}")
+        minimum, maximum = limits.get(field, (None, None))
+        kwargs[field] = _require_number(
+            data[field], f"{path}.{field}", minimum=minimum, maximum=maximum
+        )
     if kwargs["fade_margin_db"] < 0:
         _fail(f"{path}.fade_margin_db no puede ser negativo.")
     return RadioConfiguration(**kwargs)
@@ -517,6 +525,10 @@ def _floors_from_list(
     value: Any, path: str, materials_by_id: dict[str, Material]
 ) -> list[Floor]:
     items = _require_list(value, path, MAX_FLOORS)
+    if not items:
+        # El editor v1 no puede trabajar sin piso; exigirlo aquí mantiene
+        # simétrico guardar/cargar (nunca se escribe algo que no se abre).
+        _fail(f"{path}: el proyecto necesita al menos un piso.")
     floors: list[Floor] = []
     for index, item in enumerate(items):
         item_path = f"{path}[{index}]"
@@ -712,11 +724,17 @@ def document_from_dict(value: Any) -> tuple[Project, EditorState]:
         return _document_from_dict(value)
     except ProjectFormatError:
         raise
-    except (ValueError, TypeError) as exc:
+    except (ValueError, TypeError, RecursionError) as exc:
         raise ProjectFormatError(f"Valores inválidos en el documento: {exc}") from exc
 
 
 def _document_from_dict(value: Any) -> tuple[Project, EditorState]:
+    """Detecta ``schema_version`` y delega en el lector de esa versión.
+
+    Punto único de extensión para formatos futuros (F6.1 deja la
+    preparación, no implementa migraciones): una ``schema_version = 2``
+    añadiría aquí su lector/migración sin tocar el resto de la capa.
+    """
     document = _require_dict(value, "documento")
     version = document.get("schema_version")
     if isinstance(version, bool) or not isinstance(version, int):
@@ -726,6 +744,11 @@ def _document_from_dict(value: Any) -> tuple[Project, EditorState]:
             f"Versión de esquema incompatible: {version} "
             f"(esta aplicación soporta schema_version={SCHEMA_VERSION})."
         )
+    return _document_v1(document)
+
+
+def _document_v1(document: dict) -> tuple[Project, EditorState]:
+    """Lee y valida un documento con ``schema_version = 1``."""
     if "project" not in document:
         _fail("project: falta la sección obligatoria del proyecto.")
 
@@ -762,7 +785,7 @@ def save_project(
     path: str | Path,
     editor_state: EditorState | None = None,
 ) -> Path:
-    """Guarda el proyecto en ``path`` de forma atómica (temp + replace).
+    """Guarda el proyecto en ``path`` de forma atómica (temp + fsync + replace).
 
     El documento se revalida antes de escribir: nunca se deja en disco
     un archivo que la propia aplicación no podría abrir.
@@ -787,9 +810,15 @@ def save_project(
         target = target.with_suffix(".json")
     target.parent.mkdir(parents=True, exist_ok=True)
 
+    # Escritura atómica: temporal + fsync (durabilidad) + replace.
+    # Si algo falla antes del replace, el archivo previo queda intacto
+    # y el temporal se elimina.
     temporary = target.with_name(target.name + ".tmp")
     try:
-        temporary.write_text(text, encoding="utf-8")
+        with open(temporary, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(temporary, target)
     except BaseException:
         try:
@@ -808,8 +837,10 @@ def load_project(path: str | Path) -> tuple[Project, EditorState]:
             JSON inválido, esquema incompatible o valores inválidos.
     """
     source = Path(path)
-    if not source.is_file():
+    if not source.exists():
         raise ProjectFormatError(f"El archivo no existe: {source}")
+    if not source.is_file():
+        raise ProjectFormatError(f"La ruta no es un archivo: {source}")
     try:
         size = source.stat().st_size
     except OSError as exc:
@@ -830,6 +861,10 @@ def load_project(path: str | Path) -> tuple[Project, EditorState]:
         data = json.loads(text)
     except json.JSONDecodeError as exc:
         raise ProjectFormatError(f"JSON inválido en {source.name}: {exc}") from exc
+    except (ValueError, RecursionError) as exc:
+        # p. ej. entero con más de 4300 dígitos o anidamiento excesivo:
+        # el fallo del parser también es un error controlado de formato.
+        raise ProjectFormatError(f"JSON ilegible en {source.name}: {exc}") from exc
     if not isinstance(data, dict):
         raise ProjectFormatError(
             f"El documento debe ser un objeto JSON (got {type(data).__name__})."

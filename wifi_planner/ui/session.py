@@ -220,8 +220,31 @@ class EditorSession:
         return float(self.floor.height_m or 8.0)
 
     def set_floor_dimensions(self, width_m: float, height_m: float) -> None:
-        """Valida y aplica nuevas dimensiones del espacio (metros)."""
-        self.floor.set_dimensions(width_m, height_m)
+        """Valida y aplica nuevas dimensiones del espacio (metros).
+
+        Además de los límites del piso, comprueba que la resolución
+        actual siga produciendo un grid usable: el invariante
+        «dimensiones + resolución ⇒ grid válido» se mantiene en ambos
+        cambios de entrada (dimensiones y resolución), para que el
+        proyecto siempre sea simulable y guardable.
+        """
+        floor = self.floor
+        previous = (floor.width_m, floor.height_m)
+        floor.set_dimensions(width_m, height_m)  # valida > 0 y <= 10000 m
+        try:
+            probe = CoverageGrid(
+                width_m=float(floor.width_m),
+                height_m=float(floor.height_m),
+                resolution_m=self.grid_resolution_m,
+            )
+            if probe.point_count <= 0:
+                raise ValueError("Grid vacío con esas dimensiones/resolución.")
+        except ValueError as exc:
+            floor.width_m, floor.height_m = previous
+            raise ValueError(
+                f"Dimensiones incompatibles con la resolución "
+                f"{self.grid_resolution_m:g} m: {exc}"
+            ) from exc
         self.invalidate_heatmap()
         self.mark_dirty()
 
@@ -325,14 +348,19 @@ class EditorSession:
             MaterialAttenuationError: banda sin datos (p. ej. 6 GHz).
         """
         band_id = band_id or self.band_id
-        self.band_id = band_id
+        # Valida ANTES de mutar: una banda desconocida no debe dejar la
+        # sesión con band_id inválido, y un cambio real de banda es
+        # configuración persistible ⇒ dirty (decisión AN, F6.1).
+        band = self.project.get_band(band_id)
+        if band_id != self.band_id:
+            self.band_id = band_id
+            self.mark_dirty()
         self.last_heatmap_error = None
 
         aps = self.resolve_aps_for_heatmap()
         if not aps:
             raise ValueError("Coloca al menos un Access Point para el heatmap.")
 
-        band = self.project.get_band(band_id)
         grid = self.build_coverage_grid()
         points = grid.points()
 
@@ -607,7 +635,12 @@ class EditorSession:
             MaterialAttenuationError: banda sin datos (p. ej. 6 GHz).
         """
         band_id = band_id or self.band_id
-        self.band_id = band_id
+        # Misma regla que run_heatmap: validar antes de mutar + dirty
+        # si la banda persistible cambia (decisión AN, F6.1).
+        band = self.project.get_band(band_id)
+        if band_id != self.band_id:
+            self.band_id = band_id
+            self.mark_dirty()
         self.last_simulation_error = None
 
         ap = self.selected_ap()
@@ -616,7 +649,6 @@ class EditorSession:
         if ap is None:
             raise ValueError("Coloca al menos un Access Point para simular.")
 
-        band = self.project.get_band(band_id)
         points = self.sample_points_for_simulation()
         result = simulate_coverage(
             project=self.project,
