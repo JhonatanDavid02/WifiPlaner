@@ -1,0 +1,82 @@
+# =============================================================================
+# CONFIGURACIÓN POR DEFECTO - Wi-Fi Planner V1
+# =============================================================================
+# Todos los valores mágicos del motor viven AQUÍ, no en el código.
+# Unidades explícitas: dBm, dBi, dB, MHz, metros.
+# Los materiales son ESTIMACIONES configurables, no verdades universales.
+# =============================================================================
+
+radio:
+  p_tx_dbm: 20.0          # Potencia de transmisión (dBm)
+  g_tx_dbi: 3.0           # Ganancia antena TX (dBi)
+  l_tx_db: 1.0            # Pérdidas TX (dB)
+  g_rx_dbi: 0.0           # Ganancia antena RX (dBi)
+  l_rx_db: 1.0            # Pérdidas RX (dB)
+  sensitivity_dbm: -75.0  # Sensibilidad receptor (dBm)
+  fade_margin_db: 10.0    # Margen de desvanecimiento Lm (dB)
+                          # 0.0 = reproducir legacy v3/v4 (sin Lm)
+
+thresholds:
+  rssi_target_dbm: -67.0      # RSSI objetivo (comparación estricta: >)
+  som_aprobado_min_db: 20.0   # SOM >= 20 => APROBADO
+  som_riesgo_min_db: 10.0     # SOM >= 10 => RIESGO (si no APROBADO)
+  excellent_min_dbm: -50.0    # P_rx >= -50 => Excelente
+  good_min_dbm: -67.0         # P_rx >= -67 => Buena
+  regular_min_dbm: -75.0      # P_rx >= -75 => Regular
+  weak_min_dbm: -85.0         # P_rx >= -85 => Debil (si no, sin cobertura)
+
+bands:
+  - id: "band_2_4"
+    name: "2.4 GHz"
+    frequency_mhz: 2437.0     # Canal 6 (no solapable 1/6/11)
+  - id: "band_5"
+    name: "5 GHz"
+    frequency_mhz: 5180.0     # Canal 36 (UNII-1)
+  - id: "band_6"
+    name: "6 GHz"
+    frequency_mhz: 6135.0     # Canal 37 (referencia; simulación posterior)
+
+# Materiales: atenuación de REFERENCIA ESTIMATIVA por banda (dB).
+# Configure o extienda libremente. No son valores de catálogo de fabricante.
+materials:
+  - id: "drywall"
+    name: "Drywall"
+    description: "Muro de yeso (pladur). Estimación de referencia."
+    thickness_default_m: 0.012
+    attenuation_db: { band_2_4: 3.0, band_5: 4.0 }
+
+  - id: "wood"
+    name: "Madera"
+    description: "Madera maciza o laminada. Estimación de referencia."
+    thickness_default_m: 0.04
+    attenuation_db: { band_2_4: 3.0, band_5: 4.0 }
+
+  - id: "glass"
+    name: "Vidrio"
+    description: "Vidrio estándar de ventanal. Estimación de referencia."
+    thickness_default_m: 0.008
+    attenuation_db: { band_2_4: 3.0, band_5: 4.0 }
+
+  - id: "brick"
+    name: "Ladrillo"
+    description: "Mampostería de ladrillo. Estimación de referencia."
+    thickness_default_m: 0.12
+    attenuation_db: { band_2_4: 6.0, band_5: 8.0 }
+
+  - id: "concrete"
+    name: "Concreto"
+    description: "Concreto simple. Estimación de referencia."
+    thickness_default_m: 0.15
+    attenuation_db: { band_2_4: 12.0, band_5: 15.0 }
+
+  - id: "reinforced_concrete"
+    name: "Concreto reforzado"
+    description: "Concreto con acero de refuerzo. Estimación de referencia."
+    thickness_default_m: 0.20
+    attenuation_db: { band_2_4: 15.0, band_5: 20.0 }
+
+  - id: "metal"
+    name: "Metal"
+    description: "Panel o estructura metálica. Estimación de referencia."
+    thickness_default_m: 0.005
+    attenuation_db: { band_2_4: 25.0, band_5: 30.0 }

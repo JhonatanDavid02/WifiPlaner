@@ -1,0 +1,4 @@
+# Dependencias del Wi-Fi Planner V1 (fundación)
+# El motor RF solo usa la estándar (math). YAML es para configuración central.
+pytest>=8.0
+PyYAML>=6.0
