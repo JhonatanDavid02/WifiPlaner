@@ -15,6 +15,12 @@ from core.access_point import AccessPoint
 from core.client import ClientDevice
 from core.geometry import Point2D, Rect, Segment2D
 from core.material import Material
+from core.obstacle import (
+    DEFAULT_OBSTACLE_MATERIAL_ID,
+    MIN_OBSTACLE_SIZE_M,
+    OBSTACLE_KINDS,
+    Obstacle,
+)
 from core.project import Project
 from core.radio import wifi_generation
 from core.result import SimulationResult
@@ -46,6 +52,8 @@ class Tool(str, Enum):
     AP = "ap"
     CLIENT = "client"
     SPACE = "space"
+    # Fase 9: mobiliario/obstáculos (tecla "o", patrón de 2 clics).
+    OBSTACLE = "obstacle"
 
 
 class HeatmapMetric(str, Enum):
@@ -74,6 +82,8 @@ class SelectionKind(str, Enum):
     CLIENT = "client"
     SPACE = "space"
     OPENING = "opening"
+    # Fase 9: obstáculos de mobiliario.
+    OBSTACLE = "obstacle"
 
 
 @dataclass(frozen=True)
@@ -132,6 +142,8 @@ class EditorSession:
         self.wall_drag_start: Point2D | None = None
         # Fase 8: punto de inicio mientras se dibuja un espacio (metros).
         self.space_drag_start: Point2D | None = None
+        # Fase 9: punto de origen mientras se dibuja un obstáculo (metros).
+        self.obstacle_drag_start: Point2D | None = None
         self.band_id: str = "band_2_4"
         self.last_simulation: SimulationResult | None = None
         self.last_simulation_error: str | None = None
@@ -225,6 +237,7 @@ class EditorSession:
         self.selection = None
         self.wall_drag_start = None
         self.space_drag_start = None
+        self.obstacle_drag_start = None
         self.band_id = editor_state.band_id
         self.grid_resolution_m = editor_state.grid_resolution_m
         self.heatmap_ap_id = HEATMAP_ALL_APS
@@ -466,6 +479,7 @@ class EditorSession:
                     sample_points=points,
                     walls=self.floor.walls,
                     openings=self.floor.openings,
+                    obstacles=self.floor.obstacles,
                 )
             )
 
@@ -542,6 +556,7 @@ class EditorSession:
         self.tool = tool
         self.wall_drag_start = None
         self.space_drag_start = None
+        self.obstacle_drag_start = None
         if tool != Tool.SELECT:
             self.selection = None
 
@@ -586,6 +601,14 @@ class EditorSession:
                     return opening
         return None
 
+    def selected_obstacle(self) -> Obstacle | None:
+        """Obstáculo seleccionado (Fase 9), o None."""
+        if self.selection and self.selection.kind == SelectionKind.OBSTACLE:
+            for obstacle in self.floor.obstacles:
+                if obstacle.id == self.selection.entity_id:
+                    return obstacle
+        return None
+
     def find_wall(self, wall_id: str) -> Wall | None:
         """Pared por id (o None). Útil para el panel de propiedades."""
         for wall in self.floor.walls:
@@ -610,6 +633,7 @@ class EditorSession:
         ids += [f.id for f in self.project.floors]
         ids += [s.id for s in self.floor.spaces]
         ids += [o.id for o in self.floor.openings]
+        ids += [obstacle.id for obstacle in self.floor.obstacles]
         return ids
 
     def add_wall(self, start: Point2D, end: Point2D) -> Wall:
@@ -832,6 +856,139 @@ class EditorSession:
                 return
         raise KeyError(f"Apertura no encontrada: {opening_id}")
 
+    # ------------------------------------------------------------------
+    # Mobiliario / obstáculos (Fase 9): SÍ afecta a la RF (decisión BL+)
+    # ------------------------------------------------------------------
+
+    def add_obstacle(
+        self, corner_a: Point2D, corner_b: Point2D, name: str = ""
+    ) -> Obstacle:
+        """Crea un obstáculo (footprint rect alineado a ejes) entre dos esquinas.
+
+        Ambas esquinas se recortan al rectángulo del piso. El tamaño
+        mínimo por lado es ``MIN_OBSTACLE_SIZE_M`` (0.1 m). Material por
+        defecto del catálogo (``DEFAULT_OBSTACLE_MATERIAL_ID``).
+
+        Invalida el heatmap y marca ``dirty``: a diferencia de un
+        espacio, un obstáculo atenúa la señal (decisión BL/BP).
+
+        Raises:
+            ValueError: si el footprint resultante es demasiado pequeño.
+        """
+        width = self.floor_width_m
+        height = self.floor_height_m
+
+        def _clamp(point: Point2D) -> tuple[float, float]:
+            return (
+                min(max(point.x, 0.0), width),
+                min(max(point.y, 0.0), height),
+            )
+
+        x1, y1 = _clamp(corner_a)
+        x2, y2 = _clamp(corner_b)
+        rect = Rect(
+            x=min(x1, x2),
+            y=min(y1, y2),
+            width=abs(x2 - x1),
+            height=abs(y2 - y1),
+        )
+        if rect.width < MIN_OBSTACLE_SIZE_M or rect.height < MIN_OBSTACLE_SIZE_M:
+            raise ValueError(
+                f"Objeto demasiado pequeño: mínimo {MIN_OBSTACLE_SIZE_M:g} m "
+                f"por lado (got {rect.width:g} × {rect.height:g} m)."
+            )
+        obstacle_id = next_entity_id(self._all_ids(), "OBST")
+        number = obstacle_id.rsplit("-", 1)[-1]
+        obstacle = Obstacle(
+            id=obstacle_id,
+            name=name or f"Objeto {number}",
+            rect=rect,
+            material=self.project.get_material(DEFAULT_OBSTACLE_MATERIAL_ID),
+        )
+        self.floor.obstacles.append(obstacle)
+        self.select(SelectionKind.OBSTACLE, obstacle_id)
+        self.invalidate_heatmap()
+        self.mark_dirty()
+        return obstacle
+
+    def set_obstacle_properties(
+        self,
+        obstacle_id: str,
+        name: str,
+        kind: str = "furniture",
+        material_id: str | None = None,
+        attenuation_override_db: dict[str, float] | None = None,
+    ) -> None:
+        """Actualiza nombre/tipo/material/override de un obstáculo.
+
+        El material y el override afectan a la propagación ⇒ se
+        invalida el heatmap (decisión BP). El ``replace`` vuelve a pasar
+        por ``Obstacle.__post_init__`` (decisión BL): tipo, rango de
+        override y finitud se revalidan aquí.
+
+        Raises:
+            KeyError: si el obstáculo no existe o el material no.
+            ValueError: si nombre/tipo/override no son válidos.
+        """
+        name = str(name)
+        if not name.strip():
+            raise ValueError("El nombre del objeto no puede estar vacío.")
+        if len(name) > 200:
+            raise ValueError("Nombre demasiado largo (máx. 200).")
+        if kind not in OBSTACLE_KINDS:
+            raise ValueError(
+                f"Tipo de objeto no soportado: {kind!r} "
+                f"(permitidos: {', '.join(OBSTACLE_KINDS)})."
+            )
+        for index, obstacle in enumerate(self.floor.obstacles):
+            if obstacle.id == obstacle_id:
+                material = (
+                    obstacle.material
+                    if material_id is None
+                    else self.project.get_material(material_id)
+                )
+                self.floor.obstacles[index] = replace(
+                    obstacle,
+                    name=name,
+                    kind=kind,
+                    material=material,
+                    attenuation_override_db=dict(attenuation_override_db or {}),
+                )
+                self.invalidate_heatmap()
+                self.mark_dirty()
+                return
+        raise KeyError(f"Objeto no encontrado: {obstacle_id}")
+
+    def move_obstacle(self, obstacle_id: str, min_corner: Point2D) -> None:
+        """Mueve el footprint (esquina inferior izquierda) dentro del piso.
+
+        El tamaño no cambia: la esquina se recorta para que el rect
+        completo quepa en el plano (decisión BP). Invalida el heatmap.
+        """
+        for index, obstacle in enumerate(self.floor.obstacles):
+            if obstacle.id == obstacle_id:
+                x = min(
+                    max(min_corner.x, 0.0),
+                    max(self.floor_width_m - obstacle.rect.width, 0.0),
+                )
+                y = min(
+                    max(min_corner.y, 0.0),
+                    max(self.floor_height_m - obstacle.rect.height, 0.0),
+                )
+                self.floor.obstacles[index] = replace(
+                    obstacle,
+                    rect=Rect(
+                        x=x,
+                        y=y,
+                        width=obstacle.rect.width,
+                        height=obstacle.rect.height,
+                    ),
+                )
+                self.invalidate_heatmap()
+                self.mark_dirty()
+                return
+        raise KeyError(f"Objeto no encontrado: {obstacle_id}")
+
     def _clamp_to_floor(self, position: Point2D) -> Point2D:
         """Mantiene el punto dentro del rectángulo del piso."""
         x = min(max(position.x, 0.0), self.floor_width_m)
@@ -950,6 +1107,15 @@ class EditorSession:
                     self.invalidate_heatmap()
                     self.mark_dirty()
                     return True
+        elif kind == SelectionKind.OBSTACLE:
+            # Los obstáculos SÍ son RF (Fase 9): dirty + invalidar.
+            for index, obstacle in enumerate(self.floor.obstacles):
+                if obstacle.id == entity_id:
+                    del self.floor.obstacles[index]
+                    self.selection = None
+                    self.invalidate_heatmap()
+                    self.mark_dirty()
+                    return True
         self.selection = None
         return False
 
@@ -1000,6 +1166,7 @@ class EditorSession:
             sample_points=points,
             walls=self.floor.walls,
             openings=self.floor.openings,
+            obstacles=self.floor.obstacles,
         )
         self.last_simulation = result
         return result
@@ -1025,6 +1192,7 @@ class EditorSession:
             f"AP: {ap_id}\n"
             f"Banda: {band.name}\n"
             f"Paredes: {wall_count}\n"
+            f"Objetos: {len(self.floor.obstacles)}\n"
             f"Puntos simulados: {len(evaluations)}\n"
             f"RSSI mínimo: {min(rx_values):.2f} dBm\n"
             f"RSSI máximo: {max(rx_values):.2f} dBm\n"

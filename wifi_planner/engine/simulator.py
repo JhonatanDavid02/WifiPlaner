@@ -2,8 +2,8 @@
 
 Flujo por punto:
 
-    distancia → FSPL → trace_walls (L_obstacles) → link_budget
-        → P_rx / SOM / SNR → clasificación
+    distancia → FSPL → trace_walls (paredes + openings + obstáculos)
+        → link_budget → P_rx / SOM / SNR → clasificación
 
 Fase 4: la simulación espacial (heatmap) reutiliza esta misma función
 pasando los puntos de ``CoverageGrid``. No hay fórmulas duplicadas.
@@ -16,6 +16,7 @@ import time
 from typing import Sequence
 
 from core.geometry import Point2D
+from core.obstacle import Obstacle
 from core.radio import allowed_channel_widths_mhz
 from core.result import LinkEvaluation, ObstacleLoss, SimulationResult
 from core.wall import Opening, Wall
@@ -32,6 +33,7 @@ def simulate_coverage(
     client: object | None = None,
     walls: Sequence[Wall] | None = None,
     openings: Sequence[Opening] | None = None,
+    obstacles: Sequence[Obstacle] | None = None,
 ) -> SimulationResult:
     """Simula la cobertura de un AP sobre uno o varios puntos.
 
@@ -55,6 +57,11 @@ def simulate_coverage(
             atenuación de la pared en los cruces que caen dentro de un
             hueco (decisión BG). Por defecto ninguno: resultado idéntico
             a Fase 2–7.
+        obstacles: Obstáculos de mobiliario del plano (Fase 9). Solo se
+            consultan en la ruta geométrica (cuando se pasan ``walls``);
+            cada footprint cruzado aporta su pérdida independiente
+            (decisión BN). Por defecto ninguno: resultado idéntico a
+            Fase 2–8.
 
     Returns:
         SimulationResult con una LinkEvaluation por punto evaluado.
@@ -64,7 +71,8 @@ def simulate_coverage(
             canal de la radio no es compatible con la banda (Fase 7:
             2.4 GHz admite 20/40 MHz; 5/6 GHz 20/40/80/160 MHz).
         MaterialAttenuationError: si una pared cruzada en sección sólida
-            no tiene datos de atenuación para la banda (p. ej. 6 GHz).
+            o un obstáculo cruzado no tiene datos de atenuación para la
+            banda (p. ej. 6 GHz).
     """
     if sample_points is None and client is None:
         raise ValueError(
@@ -94,6 +102,7 @@ def simulate_coverage(
 
     walls_list: list[Wall] = list(walls) if walls is not None else []
     openings_list: list[Opening] = list(openings) if openings is not None else []
+    obstacles_list: list[Obstacle] = list(obstacles) if obstacles is not None else []
     use_geometry = walls is not None
 
     evaluations: list[LinkEvaluation] = []
@@ -106,6 +115,7 @@ def simulate_coverage(
                 walls=walls_list,
                 band_id=frequency_band.id,
                 openings=openings_list,
+                obstacles=obstacles_list,
             )
             obstacle = trace_to_obstacle_loss(trace)
         else:

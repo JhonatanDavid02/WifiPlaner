@@ -25,11 +25,14 @@ from engine.intersection import (
 )
 from engine.obstacles import (
     obstacle_loss_for_crossings,
+    obstacle_attenuation_db,
     wall_attenuation_db,
     trace_walls,
+    trace_obstacles,
     trace_to_obstacle_loss,
     CrossingLoss,
     WallCrossing,
+    ObstacleCrossing,
     ObstacleTraceResult,
 )
 from engine.classifier import (
@@ -55,11 +58,14 @@ __all__ = [
     "crossing_distance_from_start",
     "crossing_point",
     "obstacle_loss_for_crossings",
+    "obstacle_attenuation_db",
     "wall_attenuation_db",
     "trace_walls",
+    "trace_obstacles",
     "trace_to_obstacle_loss",
     "CrossingLoss",
     "WallCrossing",
+    "ObstacleCrossing",
     "ObstacleTraceResult",
     "classify_quality",
     "meets_rssi_target",

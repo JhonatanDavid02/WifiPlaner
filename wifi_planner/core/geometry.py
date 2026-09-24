@@ -78,3 +78,19 @@ class Rect:
 
     def center(self) -> Point2D:
         return Point2D(self.x + self.width / 2, self.y + self.height / 2)
+
+    def edge_segments(self) -> tuple["Segment2D", ...]:
+        """Los cuatro bordes del rectángulo en orden fijo (horario).
+
+        Reutiliza ``Segment2D`` para que el motor de intersecciones
+        (Fase 9) cruce trayectos contra obstáculos con la MISMA primitiva
+        que contra las paredes: una sola arquitectura geométrica.
+        """
+        x1, y1 = self.x, self.y
+        x2, y2 = self.x + self.width, self.y + self.height
+        return (
+            Segment2D(Point2D(x1, y1), Point2D(x2, y1)),
+            Segment2D(Point2D(x2, y1), Point2D(x2, y2)),
+            Segment2D(Point2D(x2, y2), Point2D(x1, y2)),
+            Segment2D(Point2D(x1, y2), Point2D(x1, y1)),
+        )

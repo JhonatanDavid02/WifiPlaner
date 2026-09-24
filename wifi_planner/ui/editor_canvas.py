@@ -5,6 +5,10 @@ No contiene fórmulas RF.
 
 Fase 8: dibuja espacios (zonas semitransparentes) y openings
 (puertas/ventanas/pass-through) como huecos coloreados en las paredes.
+
+Fase 9: dibuja obstáculos de mobiliario (footprints semisólidos entre
+espacios y paredes) con herramienta de 2 clics, arrastre y selección
+en el orden AP → Cliente → Opening → Obstáculo → Pared → Espacio.
 """
 
 from __future__ import annotations
@@ -54,6 +58,9 @@ class EditorCanvas(tk.Canvas):
 
         self._drag_ap_id: str | None = None
         self._drag_client_id: str | None = None
+        # Fase 9: arrastre de obstáculo (id + desfase del cursor al corner).
+        self._drag_obstacle_id: str | None = None
+        self._drag_obstacle_offset: Point2D = Point2D(0.0, 0.0)
         self._preview_end: Point2D | None = None
         # Imagen PIL del heatmap (se re-aplica tras cada render completo).
         self._heatmap_image = None
@@ -87,6 +94,7 @@ class EditorCanvas(tk.Canvas):
         """Limpia el estado transitorio del puntero (cambio de documento)."""
         self._drag_ap_id = None
         self._drag_client_id = None
+        self._drag_obstacle_id = None
         self._preview_end = None
 
     def draw_heatmap(self, image) -> None:
@@ -136,6 +144,10 @@ class EditorCanvas(tk.Canvas):
         # 2b) Espacios (zonas organizativas, bajo las paredes)
         self._draw_spaces()
 
+        # 2c) Obstáculos de mobiliario (Fase 9): sobre espacios, bajo
+        # paredes (el plano estructural manda en la intersección visual).
+        self._draw_obstacles()
+
         # 3) Paredes (con huecos de openings) + openings encima
         self._draw_walls()
 
@@ -157,6 +169,19 @@ class EditorCanvas(tk.Canvas):
                 self.create_rectangle(
                     min(sx1, sx2), min(sy1, sy2), max(sx1, sx2), max(sy1, sy2),
                     outline=theme.SPACE_PREVIEW, width=2, dash=(4, 3),
+                )
+
+        # Vista previa de obstáculo en curso (Fase 9, patrón de 2 clics)
+        if (
+            self.session.tool == Tool.OBSTACLE
+            and self.session.obstacle_drag_start is not None
+        ):
+            if self._preview_end is not None:
+                sx1, sy1 = vp.world_to_screen(self.session.obstacle_drag_start)
+                sx2, sy2 = vp.world_to_screen(self._preview_end)
+                self.create_rectangle(
+                    min(sx1, sx2), min(sy1, sy2), max(sx1, sx2), max(sy1, sy2),
+                    fill="", outline=theme.OBSTACLE_PREVIEW, width=2, dash=(4, 3),
                 )
 
         # 4) APs / clientes (siempre visibles sobre el heatmap)
@@ -205,6 +230,33 @@ class EditorCanvas(tk.Canvas):
             self.create_text(
                 (x1 + x2) / 2, (y1 + y2) / 2,
                 text=space.name, fill=theme.TEXT_DIM, font=("Segoe UI", 8),
+            )
+
+    def _draw_obstacles(self) -> None:
+        """Obstáculos de mobiliario (Fase 9): footprint semisólido + nombre."""
+        vp = self.viewport
+        selected = self.session.selection
+        for obstacle in self.session.floor.obstacles:
+            rect = obstacle.rect
+            x1, y1 = vp.world_to_screen(Point2D(rect.x, rect.y))
+            x2, y2 = vp.world_to_screen(
+                Point2D(rect.x + rect.width, rect.y + rect.height)
+            )
+            is_sel = (
+                selected is not None
+                and selected.kind == SelectionKind.OBSTACLE
+                and selected.entity_id == obstacle.id
+            )
+            self.create_rectangle(
+                min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2),
+                fill=theme.OBSTACLE_FILL,
+                outline=theme.OBSTACLE_SELECTED if is_sel else theme.OBSTACLE_OUTLINE,
+                width=3 if is_sel else 1,
+                stipple="gray50",
+            )
+            self.create_text(
+                (x1 + x2) / 2, (y1 + y2) / 2,
+                text=obstacle.name, fill=theme.TEXT_LABEL, font=("Segoe UI", 8),
             )
 
     def _draw_walls(self) -> None:
@@ -384,8 +436,12 @@ class EditorCanvas(tk.Canvas):
                 if (ex - wx) ** 2 + (ey - wy) ** 2 <= self.SNAP_RADIUS_PX ** 2:
                     return endpoint
 
-        # 2) Ejes H/V respecto al inicio del trazo (pared o espacio)
-        start = self.session.wall_drag_start or self.session.space_drag_start
+        # 2) Ejes H/V respecto al inicio del trazo (pared, espacio u obstáculo)
+        start = (
+            self.session.wall_drag_start
+            or self.session.space_drag_start
+            or self.session.obstacle_drag_start
+        )
         if start is not None:
             # Umbral en metros equivalente a SNAP_RADIUS_PX
             tol_m = self.SNAP_RADIUS_PX / max(vp.scale, 1e-9)
@@ -429,6 +485,21 @@ class EditorCanvas(tk.Canvas):
             )
             if self._point_segment_dist_px(wx, wy, sx, sy, ex, ey) <= radius:
                 return SelectionKind.OPENING, opening.id
+
+        # Obstáculos (Fase 9): por encima de paredes/espacios porque
+        # representan mobiliario a pie de plano; un AP/cliente siguen
+        # mandando (hit más preciso arriba).
+        for obstacle in reversed(self.session.floor.obstacles):
+            rect = obstacle.rect
+            x1, y1 = vp.world_to_screen(Point2D(rect.x, rect.y))
+            x2, y2 = vp.world_to_screen(
+                Point2D(rect.x + rect.width, rect.y + rect.height)
+            )
+            if (
+                min(x1, x2) - radius <= wx <= max(x1, x2) + radius
+                and min(y1, y2) - radius <= wy <= max(y1, y2) + radius
+            ):
+                return SelectionKind.OBSTACLE, obstacle.id
 
         # Paredes: distancia punto-segmento en píxeles
         for wall in reversed(self.session.floor.walls):
@@ -481,6 +552,12 @@ class EditorCanvas(tk.Canvas):
         elif self.session.tool == Tool.SPACE and self.session.space_drag_start is not None:
             self._preview_end = self._snap_world(world)
             self.render_project()
+        elif (
+            self.session.tool == Tool.OBSTACLE
+            and self.session.obstacle_drag_start is not None
+        ):
+            self._preview_end = self._snap_world(world)
+            self.render_project()
 
         # Arrastre de AP / cliente: solo repinta el plano; el heatmap se
         # invalida en el modelo y se recalcula al soltar (debounce en App).
@@ -490,6 +567,16 @@ class EditorCanvas(tk.Canvas):
             self.render_project()
         elif self._drag_client_id:
             self.session.move_client(self._drag_client_id, self._snap_world(world))
+            self.render_project()
+        elif self._drag_obstacle_id:
+            # Mismo patrón que el AP: repinta sin heatmap durante el
+            # arrastre; el modelo ya invalidó y App hace debounce.
+            target = Point2D(
+                world.x - self._drag_obstacle_offset.x,
+                world.y - self._drag_obstacle_offset.y,
+            )
+            self.session.move_obstacle(self._drag_obstacle_id, target)
+            self.clear_heatmap()
             self.render_project()
 
     def _on_press(self, event) -> None:
@@ -508,6 +595,13 @@ class EditorCanvas(tk.Canvas):
                 self._drag_ap_id = entity_id
             elif kind == SelectionKind.CLIENT:
                 self._drag_client_id = entity_id
+            elif kind == SelectionKind.OBSTACLE:
+                obstacle = self.session.selected_obstacle()
+                if obstacle is not None:
+                    self._drag_obstacle_id = entity_id
+                    self._drag_obstacle_offset = Point2D(
+                        world.x - obstacle.rect.x, world.y - obstacle.rect.y
+                    )
             self.on_model_changed()
             return
 
@@ -544,6 +638,26 @@ class EditorCanvas(tk.Canvas):
             self.on_model_changed()
             return
 
+        if tool == Tool.OBSTACLE:
+            # Fase 9: mismo patrón de 2 clics que espacio/pared.
+            if self.session.obstacle_drag_start is None:
+                self.session.obstacle_drag_start = world
+                self._preview_end = world
+            else:
+                try:
+                    self.session.add_obstacle(
+                        self.session.obstacle_drag_start, world
+                    )
+                except ValueError:
+                    pass
+                self.session.obstacle_drag_start = None
+                self._preview_end = None
+                # Mismo patrón que SPACE: se queda en la herramienta
+                # para encadenar; Escape/SELECT para salir.
+            self.render_project()
+            self.on_model_changed()
+            return
+
         if self.session.tool == Tool.AP:
             self.session.add_access_point(world)
             self.session.set_tool(Tool.SELECT)
@@ -563,9 +677,10 @@ class EditorCanvas(tk.Canvas):
         pass
 
     def _on_release(self, _event) -> None:
-        if self._drag_ap_id or self._drag_client_id:
+        if self._drag_ap_id or self._drag_client_id or self._drag_obstacle_id:
             self._drag_ap_id = None
             self._drag_client_id = None
+            self._drag_obstacle_id = None
             self.on_model_changed()
 
     def _on_delete_key(self, _event) -> str:

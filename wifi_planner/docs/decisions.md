@@ -813,6 +813,102 @@ empíricamente (sondas de parser, invariantes y residuales).
 
 ---
 
+## Fase 9 — Obstáculos y mobiliario
+
+### Decisión BL — `Obstacle` con footprint rectangular en `core/obstacle.py`
+
+- **Decisión:** el dominio vive en `core/obstacle.py` como
+  `Obstacle` frozen dataclass: `id`, `name`, `rect: Rect` (footprint
+  alineado a ejes, en metros), `material` (obligatorio), `kind`
+  (`OBSTACLE_KINDS = furniture | equipment | column | other`),
+  `attenuation_override_db` (por banda), `blocks_signal` y
+  `metadata`. El scaffold muerto de F1 en `core/wall.py`
+  (`class Obstacle` segment-based + `ObstacleKind` enum) se **elimina**:
+  un solo concepto, una sola clase, cero consumidores divergentes.
+- **Constantes:** `MIN_OBSTACLE_SIZE_M = 0.1` (editor),
+  `MAX_OBSTACLE_SIZE_M = 1000` (archivo),
+  `MAX_OBSTACLE_ATTENUATION_DB = 200` (igual que openings),
+  `DEFAULT_OBSTACLE_MATERIAL_ID = "wood"`.
+- **Qué NO:** sin altura (`height_m`), sin polígonos arbitrarios, sin
+  giro, sin booleanos sobre paredes; los solapes entre obstáculos se
+  permiten y sus pérdidas se acumulan. Hit-test:
+  AP → Cliente → Opening → Obstáculo → Pared → Espacio.
+
+### Decisión BM — Pérdida por obstáculo: reemplazo del material, sin espesor
+
+- **Decisión (Modelo C con precedencia explícita):** si
+  `attenuation_override_db` define la banda evaluada, ese valor
+  **sustituye** a `material.attenuation_for(band)`; jamás se suman
+  (`metal 25 + override 7` ⇒ **7 dB**, no 32 dB). Si no hay override,
+  se usa la atenuación de referencia del catálogo **sin escalar por
+  espesor**: el footprint no es un espesor de pared.
+- **6 GHz:** el comportamiento es idéntico al de las paredes sólidas —
+  obstáculo cruzado sin override `band_6` ⇒ `MaterialAttenuationError`;
+  no se inventan valores ni se convierte 5 → 6 GHz. Un obstáculo no
+  cruzado no se consulta y por tanto no lanza error.
+- **Razón:** una única regla de precedencia (reemplazo, como los
+  openings en BG) elimina la ambigüedad «¿material + override o solo
+  override?» y hace el desglose del link budget auditable.
+
+### Decisión BN — Un solo atravesamiento por obstáculo y orden fusionado
+
+- **Decisión:** el trayecto AP → punto se evalúa contra los cuatro
+  bordes del rect con la MISMA primitiva que las paredes
+  (`segment_crossing_parameters`, cruce interior estricto; ver F/G).
+  Si hay ≥ 1 cruce de borde se registra **un solo** atravesamiento con
+  la menor distancia (la entrada). Tocar una esquina exacta, correr
+  por un borde (colineal) o quedar completamente dentro ⇒ 0 cruces.
+  Pre-check AABB descarta cajas disjuntas (no cambia la semántica).
+- **Orden canónico fusionado:** paredes y obstáculos se fusionan en
+  `(distancia, tipo —pared(0) antes que obstáculo(1)—, id)` y la suma
+  flotante sigue ese orden, con lo que el resultado es independiente
+  del orden de las listas de entrada. Sin obstáculos el orden reduce a
+  `(distancia, wall.id)` — idéntico a Fase 2–8.
+- **Sin doble atenuación:** la pérdida del obstáculo es
+  independiente de la pared u opening de la misma trayectoria; un
+  opening sigue reemplazando SOLO su sección de pared. Un solo
+  atravesamiento por obstáculo evita contar dos veces la entrada y la
+  salida del mismo objeto.
+- **Razón:** compartir la primitiva de intersección garantiza que
+  paredes y mobiliario no diverjan en casos de borde; el orden
+  fusionado preserva la regresión byte-idéntica.
+
+### Decisión BO — `floors[].obstacles` opcional en schema v1
+
+- **Decisión:** misma fórmula que spaces/openings (BE): la clave
+  `obstacles` es **opcional al leer** (ausente ⇒ lista vacía; los
+  archivos F1–F8 abren sin migración) y **siempre se escribe** al
+  guardar, dentro del piso correspondiente. `schema_version` sigue
+  siendo **1**. Cada entrada valida: `id` único por piso,
+  `material_id` obligatorio y existente en el catálogo, `kind` ∈
+  `OBSTACLE_KINDS`, rect con dimensiones (0, `MAX_OBSTACLE_SIZE_M`] y
+  coords acotadas, finitos y no booleanos; override por banda en
+  `[0, 200]` con claves no vacías; `blocks_signal` booleano; metadata
+  dict. Límite `MAX_OBSTACLES = 5000`.
+- **Razón:** el lector ya trata el JSON como entrada no confiable
+  (AI/AP); los obstáculos heredan exactamente el mismo nivel de
+  protección sin ampliar el alcance del formato.
+
+### Decisión BP — Interacción mínima de obstáculos (tecla `o`, 2 clics, arrastre)
+
+- **Decisión:** tool `Tool.OBSTACLE` con radio «Objeto» en la toolbar
+  y tecla `o` (el handler ignora Ctrl, sin conflicto con Ctrl+O).
+  Creación con **dos clics + preview** (patrón SPACE); en SELECT se
+  arrastra el footprint completo con clamp al piso (el tamaño no
+  cambia); panel **Objeto** con nombre / tipo / material / override
+  `band_id=dB` (separado por `,` o `;`). Escape limpia el trazo.
+- **Invalidación RF:** a diferencia de `Space` (BH), **toda** mutación
+  de obstáculos — crear, editar nombre/tipo/material/override,
+  mover y borrar — llama a `invalidate_heatmap()` y marca `dirty`:
+  el mobiliario atenúa la señal y el heatmap debe recalcularse
+  (el pipeline con debounce de la app se encarga del recálculo).
+- **Qué NO:** sin editor de vértices, sin rotación desde la UI, sin
+  catálogo de objetos precargado ni biblioteca BIM; el override se
+  escribe a mano por banda y se revalida en `Obstacle.__post_init__`
+  (`replace` vuelve a pasar por toda la validación del dominio).
+
+---
+
 ## Discrepancias encontradas (no resueltas silenciosamente)
 
 ### 1. Distancias `d_max` contradictorias

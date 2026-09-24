@@ -38,6 +38,12 @@ WINDOW_COLOR = "#56b6c2"
 PASS_THROUGH_COLOR = "#c678dd"
 OPENING_SELECTED = "#4f9cf9"
 
+# Fase 9: obstáculos de mobiliario (footprints semisólidos, bajo paredes)
+OBSTACLE_FILL = "#6b4a2f"
+OBSTACLE_OUTLINE = "#b08050"
+OBSTACLE_SELECTED = "#4f9cf9"
+OBSTACLE_PREVIEW = "#4f9cf9"
+
 # Controles ttk (estilo)
 STYLE_MAP = {
     "TFrame": {"background": [("active", BG), ("!active", BG)]},

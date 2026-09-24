@@ -80,14 +80,15 @@ Representa el dominio. Entidades puras, sin lógica de RF ni de UI.
 
 | Módulo | Responsabilidad |
 |---|---|
-| `geometry.py` | `Point2D`, `Segment2D`, `Rect` — **unidades: metros** |
+| `geometry.py` | `Point2D`, `Segment2D`, `Rect` — **unidades: metros**; `Rect.edge_segments` (F9) |
 | `band.py` | `FrequencyBand` — 2.4 / 5 / 6 GHz desde V1 |
 | `material.py` | `Material` — atenuación por banda, valores centralizados |
 | `radio.py` | `RadioConfiguration` — P_tx, ganancias, pérdidas, Lm, sensibilidad, **ruido/ancho/estándar (F7)** + `allowed_channel_widths_mhz`, `wifi_generation` |
 | `access_point.py` | `AccessPoint` — posición en metros + configuración de radio |
 | `client.py` | `ClientDevice` — posición + sensibilidad |
-| `wall.py` | `Wall`, `Opening`, `Obstacle` — geometría + material + espesor. **F8:** `Opening` muro-relativo con validación (límites BK), `OPENING_KINDS`, `wall_point_at_offset`, `opening_segment`, `group_openings_by_wall` (orden canónico) |
-| `space.py` | `Space`, `Floor` — zonas y pisos (`width_m`/`height_m`); `MIN_SPACE_SIZE_M` (F8) |
+| `wall.py` | `Wall`, `Opening` — geometría + material + espesor. **F8:** `Opening` muro-relativo con validación (límites BK), `OPENING_KINDS`, `wall_point_at_offset`, `opening_segment`, `group_openings_by_wall` (orden canónico). **F9:** el scaffold de `Obstacle` se mudó a `core/obstacle.py` (un solo concepto) |
+| `obstacle.py` | **Fase 9:** `Obstacle` (footprint `Rect` en metros, material obligatorio, `kind`, `attenuation_override_db`, `blocks_signal`) + `OBSTACLE_KINDS`, `MIN/MAX_OBSTACLE_SIZE_M`, `MAX_OBSTACLE_ATTENUATION_DB`, `DEFAULT_OBSTACLE_MATERIAL_ID` (decisión BL) |
+| `space.py` | `Space`, `Floor` — zonas y pisos (`width_m`/`height_m`, `obstacles` en F9); `MIN_SPACE_SIZE_M` (F8) |
 | `project.py` | `Project`, `CoverageThresholds` — contenedor raíz + umbrales (RSSI/SOM/calidad + `snr_target_db`) |
 | `result.py` | `LinkEvaluation` (con `snr_db`/`noise_floor_dbm`), `SimulationResult`, `QualityClass`, `Verdict` |
 
@@ -101,24 +102,24 @@ devuelven resultados. **La UI solo consume estos resultados.**
 | `link_budget.py` | Presupuesto de enlace, SOM, SNR (`signal_to_noise_ratio`), `evaluate_link` |
 | `classifier.py` | Clasificación SOM / RSSI / calidad + `meets_snr_target` y diagnóstico `rf_diagnostic` (F7) |
 | `intersection.py` | Cruce trayecto ↔ segmento de pared (interior estricto) |
-| `obstacles.py` | `trace_walls(..., openings=)` — atenuación por material/espesor, suma; **F8:** un cruce dentro de un hueco **sustituye** la pérdida del material por el override del hueco (decisión BG); `WallCrossing`/`CrossingLoss` llevan `opening_id` |
+| `obstacles.py` | `trace_walls(..., openings=, obstacles=)` — atenuación por material/espesor, suma; **F8:** un cruce dentro de un hueco **sustituye** la pérdida del material por el override del hueco (decisión BG); `WallCrossing`/`CrossingLoss` llevan `opening_id`. **F9:** `obstacle_attenuation_db` (override sustituye material, BM), `trace_obstacles`, `_obstacle_candidates` (cruce interior estricto, un solo atravesamiento, BN), `ObstacleCrossing`/`ObstacleTraceResult.obstacles_crossed` y `CrossingLoss.obstacle_id` |
 | `coverage_grid.py` | **Fase 4:** malla regular de puntos (metros), límites |
-| `simulator.py` | `simulate_coverage` — un punto o el grid completo; valida ancho×banda (F7), calcula stats con SNR y propaga `openings` a `trace_walls` (F8) |
+| `simulator.py` | `simulate_coverage` — un punto o el grid completo; valida ancho×banda (F7), calcula stats con SNR y propaga `openings`/`obstacles` a `trace_walls` (F8/F9) |
 | `combine.py` | Combinación de resultados multi-AP (Fase 5) con stats de SNR del ganador (F7) |
 
-### `ui/` (Fase 3–8)
+### `ui/` (Fase 3–9)
 Presentación. Sin fórmulas RF; solo pintar, capturar eventos y llamar
 al engine / `EditorSession`.
 
 | Módulo | Responsabilidad |
 |---|---|
-| `session.py` | `EditorSession`: operaciones puras sobre `Project` (testeable sin Tk): editor + guardar/abrir/nuevo + dirty state + `heatmap_metric`/`apply_rf_settings` (F7) + **CRUD de `Space`/`Opening` (F8)**: `add_space`/`set_space_properties`, `add_opening`/`set_opening_offsets`/`set_opening_kind` (clamps, invalidación y cascada pared → openings), passthrough de `openings` a `simulate_coverage` |
+| `session.py` | `EditorSession`: operaciones puras sobre `Project` (testeable sin Tk): editor + guardar/abrir/nuevo + dirty state + `heatmap_metric`/`apply_rf_settings` (F7) + **CRUD de `Space`/`Opening` (F8)** + **CRUD de `Obstacle` (F9)**: `add_obstacle`/`set_obstacle_properties`/`move_obstacle` (clamps, `replace` revalida el dominio, **invalidan heatmap y dirty** — BP), passthrough de `openings`/`obstacles` a `simulate_coverage` |
 | `viewport.py` | **Único** conversor metros ↔ píxeles (escala isotrópica) |
-| `editor_canvas.py` | Canvas: capas floor → heatmap → spaces → walls (con huecos) → APs → leyenda (RSSI o SNR); hit-test openings → paredes → espacios; tool `Zona` con dos clics + preview (F8) |
+| `editor_canvas.py` | Canvas: capas floor → heatmap → spaces → **obstacles (F9)** → walls (con huecos) → APs → leyenda (RSSI o SNR); hit-test AP → cliente → openings → **obstacles** → paredes → espacios (F9); tools `Zona` y **`Objeto` con dos clics + preview (F8/F9)**; arrastre de obstáculo con clamp (F9) |
 | `coverage_renderer.py` | `SimulationResult` → imagen Pillow RGBA + leyenda + stats; escalas `rssi`/`snr` (F7, parámetro `metric`) |
-| `app.py` | Ventana principal, **debounce ~150 ms** del heatmap, menú **Archivo** (Nuevo/Abrir/Guardar/Guardar como) y confirmación de cambios sin guardar; tecla `e` → tool Zona, Escape limpia trazos (F8) |
-| `panels/toolbar.py` | Herramienta (incl. **Zona**, F8), banda, resolución, toggle heatmap, selector de AP, **métrica RSSI/SNR y Config RF… (F7)**, **Dimensiones…** (F8 renombra el viejo `Espacio…`) |
-| `panels/properties.py` | Propiedades del elemento + resumen simulación/heatmap + bloque RF global (F7) + **Espacio (nombre/función) y Apertura (tipo/offsets) + `+ Puerta`/`+ Ventana` desde la pared (F8)** |
+| `app.py` | Ventana principal, **debounce ~150 ms** del heatmap, menú **Archivo** (Nuevo/Abrir/Guardar/Guardar como) y confirmación de cambios sin guardar; tecla `e` → tool Zona, tecla **`o` → tool Objeto (F9)**, Escape limpia trazos (F8/F9) |
+| `panels/toolbar.py` | Herramienta (incl. **Zona** y **Objeto**, F8/F9), banda, resolución, toggle heatmap, selector de AP, **métrica RSSI/SNR y Config RF… (F7)**, **Dimensiones…** (F8 renombra el viejo `Espacio…`) |
+| `panels/properties.py` | Propiedades del elemento + resumen simulación/heatmap + bloque RF global (F7) + **Espacio (nombre/función) y Apertura (tipo/offsets) + `+ Puerta`/`+ Ventana` desde la pared (F8)** + **marco Objeto: nombre/tipo/material/override `band_id=dB` (F9)** |
 | `dialogs/rf_dialog.py` | **F7:** diálogo de configuración RF (ruido, objetivos, estándar, ancho); captura `ValueError` |
 
 ### `persistence/` (Fase 6, endurecida en 6.1)
@@ -131,7 +132,7 @@ Tkinter ni simula; el dominio (`core/`) no sabe que existen archivos.
 
 | Módulo | Responsabilidad |
 |---|---|
-| `json_project_repository.py` | `save_project` (revalida + `.tmp` + `fsync` + `os.replace`) / `load_project`, `project_to_dict` / `project_from_dict`, dispatch por `schema_version` (`_document_v1`; punto de extensión para futuras versiones), `ProjectFormatError`, límites; **F8:** `spaces`/`openings` por piso (claves opcionales al leer, siempre escritas) con validación estricta (pared existente, offsets dentro de la pared, límites BJ) |
+| `json_project_repository.py` | `save_project` (revalida + `.tmp` + `fsync` + `os.replace`) / `load_project`, `project_to_dict` / `project_from_dict`, dispatch por `schema_version` (`_document_v1`; punto de extensión para futuras versiones), `ProjectFormatError`, límites; **F8:** `spaces`/`openings` por piso (claves opcionales al leer, siempre escritas) con validación estricta (pared existente, offsets dentro de la pared, límites BJ); **F9:** `obstacles` por piso (misma fórmula, límites BO: material del catálogo, kind soportado, rect ≤ 1000 m, override [0, 200], `MAX_OBSTACLES = 5000`) |
 | `EditorState` | Preferencias persistibles del editor: banda activa y resolución del grid |
 
 ### `config/`
@@ -162,20 +163,22 @@ UI (metros)                    engine                              UI (píxeles)
 
 1. El editor construye un `Project` con geometría en **metros**.
 2. `EditorSession.run_heatmap()` construye el `CoverageGrid` y llama a
-   `engine.simulate_coverage(..., sample_points=grid.points(), walls=floor.walls, openings=floor.openings)`.
-3. Por cada punto, `trace_walls` (paredes + openings) + link budget
-   canónico (sin fórmulas nuevas en la UI).
+   `engine.simulate_coverage(..., sample_points=grid.points(), walls=floor.walls, openings=floor.openings, obstacles=floor.obstacles)`.
+3. Por cada punto, `trace_walls` (paredes + openings + obstáculos) +
+   link budget canónico (sin fórmulas nuevas en la UI).
 4. `ui.coverage_renderer.build_heatmap_image` pinta cada evaluación como
    celda centrada en su punto, alineada al `Viewport` (metros → píxeles
    solo vía `Viewport`).
-5. Capas del Canvas: suelo/rejilla → heatmap → paredes → APs/clientes →
-   leyenda. El hit-test del editor **no** depende de la capa heatmap.
+5. Capas del Canvas: suelo/rejilla → heatmap → spaces → **obstacles
+   (F9)** → paredes → APs/clientes → leyenda. El hit-test del editor
+   **no** depende de la capa heatmap.
 6. La UI **nunca** recalcula FSPL, SOM, intersecciones ni umbrales.
 
 ### `trace_walls` (responsabilidad clave)
 
 ```
-trace_walls(source, target, walls, band_id, openings=()) -> ObstacleTraceResult
+trace_walls(source, target, walls, band_id, openings=(), obstacles=())
+    -> ObstacleTraceResult
 ```
 
 - Evalúa cada pared con `blocks_signal=True` contra el segmento
@@ -190,6 +193,15 @@ trace_walls(source, target, walls, band_id, openings=()) -> ObstacleTraceResult
   hueco no consulta el catálogo de materiales (6 GHz con hueco ⇒ 0 dB);
   los cruces sólidos siguen lanzando `MaterialAttenuationError`. Sin
   `openings` el resultado es idéntico al de Fase 2–7.
+- **Fase 9:** los obstáculos con `blocks_signal=True` se evalúan con la
+  misma primitiva contra sus cuatro bordes; ≥ 1 cruce interior ⇒ **un
+  solo** atravesamiento con la distancia de entrada (decisión BN). El
+  `ObstacleTraceResult` añade `obstacles_crossed` (`ObstacleCrossing`
+  con `obstacle_id` en el detalle) y la suma fusiona paredes +
+  obstáculos en orden `(distancia, tipo, id)`. La pérdida de cada
+  obstáculo es `override(banda)` si existe, si no la de referencia del
+  material sin espesor (decisión BM); sin `obstacles` el resultado es
+  **byte-idéntico** al de Fase 2–8.
 
 ### Heatmap (Fase 4–5, métrica en 7)
 
@@ -307,8 +319,15 @@ Los píxeles **no existen** en `core/` ni `engine/`.
   semántica de **reemplazo** en `trace_walls`, editor (tool `Zona`,
   creación/edición de aperturas, hit-test, preview), claves opcionales
   `spaces`/`openings` en schema v1, tests de dominio/geometría/persistencia.
-- **Futuro:** canales/interferencia, mobiliario (`Obstacle`), edición
-  de extremos de pared, CAD (snaps, snaps angulares, booleanos).
+- **Fase 9 (hecha):** obstáculos y mobiliario — `Obstacle` con
+  footprint rectangular (`core/obstacle.py`), pérdida con precedencia
+  explícita override ≻ material sin escalar por espesor (BM), un solo
+  atravesamiento por footprint y orden fusionado `(distancia, tipo, id)`
+  (BN), editor (tool `Objeto`, tecla `o`, dos clics, arrastre con
+  clamp, panel), claves opcionales `obstacles` en schema v1 (BO),
+  regresión F8 byte-idéntica.
+- **Futuro:** canales/interferencia, edición de extremos de pared,
+  CAD (snaps, snaps angulares, booleanos).
 - **Futuro 3D:** `Floor.elevation_m` ya existe; geometría 2D no cambia.
 - **Otras bases de datos / API / nube:** la capa `persistence/` es el
   punto de sustitución sin tocar `core/` ni `engine/`.

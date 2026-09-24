@@ -1,19 +1,22 @@
-"""Paredes, huecos y obstáculos.
+"""Paredes y huecos (openings).
 
 Una pared es un segmento geométrico con material y espesor.
-La geometría está en metros. La UI future solo dibujará esta información;
-el motor la leerá para calcular atenuación por obstáculos.
+La geometría está en metros. La UI solo dibuja esta información;
+el motor la lee para calcular atenuación por obstáculos.
 
 Fase 8: los openings (puertas/ventanas) son muro-relativos
 (decisión BF): viven en ``Floor.openings`` referenciando ``wall_id``
 por offsets métricos desde ``wall.segment.start``.
+
+Fase 9: los obstáculos de mobiliario NO viven aquí — son una entidad
+independiente por piso en ``core/obstacle.py`` (decisión BL; el antiguo
+scaffold ``Obstacle`` de esta fase 1 era código muerto sin consumidores).
 """
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import Iterable
 
 from core.geometry import Point2D, Segment2D
@@ -35,16 +38,6 @@ DEFAULT_OPENING_LENGTH_M: dict[str, float] = {
     "window": 1.2,
     "pass_through": 1.0,
 }
-
-
-class ObstacleKind(str, Enum):
-    """Tipo de obstáculo relevante para el modelo de cobertura."""
-
-    WALL = "wall"
-    OPENING = "opening"
-    FURNITURE = "furniture"
-    COLUMN = "column"
-    OTHER = "other"
 
 
 @dataclass(frozen=True)
@@ -220,24 +213,3 @@ def group_openings_by_wall(
         wall_id: tuple(sorted(items, key=lambda o: (o.start_offset_m, o.id)))
         for wall_id, items in grouped.items()
     }
-
-
-@dataclass(frozen=True)
-class Obstacle:
-    """Obstáculo puntual o de mobiliario con atenuación propia.
-
-    Attributes:
-        id: Identificador estable.
-        kind: Tipo (furniture, column, equipment...).
-        segment: Geometría aproximada en metros.
-        attenuation_db_by_band: {band_id: atenuación en dB}.
-        blocks_signal: Si es False, se ignora en la simulación.
-    """
-
-    id: str
-    kind: ObstacleKind
-    segment: Segment2D
-    attenuation_db_by_band: dict[str, float] = field(default_factory=dict)
-    blocks_signal: bool = True
-    material: Material | None = None
-    thickness_m: float | None = None

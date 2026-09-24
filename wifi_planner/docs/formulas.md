@@ -132,10 +132,14 @@ Implementación: `engine.classifier.classify_quality(rx_power_dbm, thresholds)`
 ## 8. Pérdida por obstáculos (paredes reales)
 
 ```
-L_total_obstacles = Σ L_wall_i          (por cada pared atravesada)
+L_total_obstacles = Σ L_wall_i  +  Σ L_obstáculo_j     (Fase 9)
 
 L_wall = L_referencia(material, banda) × (espesor_actual / espesor_referencia)
+L_obstáculo = override(banda) o L_referencia(material, banda)   (sin espesor)
 ```
+
+Sin obstáculos de mobiliario (`obstacles = ()`) la segunda suma es 0 y
+la fórmula es exactamente la de Fase 2–8.
 
 ### Trazado (Fase 2)
 
@@ -217,6 +221,52 @@ L_cruce = L_wall(banda, espesor)   si d ∉ ningún opening de la pared
 
 Implementación: `engine.obstacles.trace_walls`,
 `core.wall.group_openings_by_wall`.
+
+### Obstáculos de mobiliario (Fase 9)
+
+Un `Obstacle` (mesa, rack, columna…) es un footprint `Rect` alineado a
+ejes en metros, sin altura ni giro (decisión BL). Se traza con la MISMA
+primitiva de intersección que las paredes: `segment_crossing_parameters`
+contra los cuatro bordes del rect (`Rect.edge_segments`).
+
+```
+L_obstáculo = override(banda)    si attenuation_override_db lo define
+            = L_material(banda)  si no (atenuación de referencia)
+
+L_total = Σ L_cruce_i (paredes + openings) + Σ L_obstáculo_j
+          en orden canónico: (distancia, tipo —pared antes que
+          obstáculo—, id) — decisión BN
+```
+
+- **Un solo atravesamiento por obstáculo:** si el trayecto tiene ≥ 1
+  cruce interior estricto con los bordes, se registra UNA sola pérdida
+  con la menor distancia (la entrada en el footprint). Tocar
+  exactamente una esquina, correr por encima de un borde (colineal) o
+  quedar completamente dentro del rect ⇒ **0 cruces** — misma
+  convención que las paredes (decisiones F y G, decisión BN).
+- **Reemplazo, nunca suma (BM):** el override **sustituye** a la
+  atenuación de referencia del material. Metal (25 dB) con override
+  `band_2_4 = 7` ⇒ 7 dB, no 32 dB.
+- **Sin escala de espesor:** el footprint no es un espesor de pared;
+  se usa la referencia del material tal cual.
+- **Sin doble atenuación (BN):** la pérdida del obstáculo es
+  independiente de la pared u opening de la misma trayectoria. Un
+  opening sigue reemplazando SOLO la pérdida de su sección de pared;
+  el total de un cruce en hueco + obstáculo es `0 + L_obstáculo`.
+- **6 GHz:** un obstáculo **cruzado** sin override `band_6` lanza
+  `MaterialAttenuationError` (igual que una pared sólida). Un
+  obstáculo no cruzado no se consulta en absoluto ⇒ no lanza error.
+- **Descarte AABB previo:** los obstáculos con caja envolvente disjunta
+  del trayecto se descartan antes de las cuatro intersecciones (no
+  cambia la semántica; solo evita trabajo).
+- El `ObstacleCrossing`/`CrossingLoss` del cruce lleva `obstacle_id`
+  (None en los cruces de pared), de modo que el detalle del link
+  budget distingue paredes de mobiliario.
+- Sin `obstacles` (o lista vacía) el resultado es **idéntico** al de
+  Fase 2–8: regresión byte-idéntica verificada.
+
+Implementación: `engine.obstacles.obstacle_attenuation_db`,
+`engine.obstacles.trace_obstacles`, `engine.obstacles.trace_walls`.
 
 Implementación: `engine.obstacles.wall_attenuation_db`,
 `engine.obstacles.trace_walls`.

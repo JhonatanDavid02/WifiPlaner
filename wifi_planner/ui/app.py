@@ -286,6 +286,9 @@ class WifiPlannerApp(tk.Tk):
         self.bind("a", make_tool_handler(Tool.AP))
         self.bind("c", make_tool_handler(Tool.CLIENT))
         self.bind("e", make_tool_handler(Tool.SPACE))
+        # Fase 9: "o" = Objeto/obstáculo (sin conflicto con Ctrl+O:
+        # el handler ignora la tecla con Ctrl pulsado).
+        self.bind("o", make_tool_handler(Tool.OBSTACLE))
 
     def _initial_render(self) -> None:
         w = self.canvas.winfo_width()
@@ -478,6 +481,7 @@ class WifiPlannerApp(tk.Tk):
     def _on_escape(self, _event=None) -> str:
         self.session.wall_drag_start = None
         self.session.space_drag_start = None
+        self.session.obstacle_drag_start = None
         self.session.select(None, None)
         self._set_tool(Tool.SELECT)
         self.properties.refresh()

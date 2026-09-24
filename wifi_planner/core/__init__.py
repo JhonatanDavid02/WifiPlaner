@@ -15,7 +15,8 @@ from core.material import Material
 from core.radio import RadioConfiguration
 from core.access_point import AccessPoint
 from core.client import ClientDevice
-from core.wall import Wall, Opening, Obstacle
+from core.wall import Wall, Opening
+from core.obstacle import Obstacle
 from core.space import Space, Floor
 from core.project import Project, CoverageThresholds
 from core.result import (

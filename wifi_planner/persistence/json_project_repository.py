@@ -13,7 +13,8 @@ Formato (``schema_version = 1``)::
         "thresholds": {...},
         "floors": [{"id", "name", "level", "width_m", "height_m",
                     "elevation_m", "metadata", "walls": [...],
-                    "spaces": [...], "openings": [...]}],
+                    "spaces": [...], "openings": [...],
+                    "obstacles": [...]}],
         "access_points": [...],
         "clients": [...],
         "metadata": {...}
@@ -42,6 +43,12 @@ Decisiones de formato (docs/decisions.md, Fase 6 + 7 + 8):
   ``wall_id`` existente en el mismo piso y offsets dentro de la pared.
   ``Opening.blocks_signal`` no existía en el formato: el hueco siempre
   modifica su pared (la semántica es del cruce, no de una bandera).
+- Fase 9 (misma versión 1, decisiones BL/BO): ``floors[]`` gana la
+  clave **opcional** ``obstacles`` (ausentes ⇒ lista vacía: archivos
+  F1–F8 abren sin migración). Cada obstáculo lleva ``rect`` (footprint
+  en metros), ``material_id`` (obligatorio y existente en el catálogo),
+  ``kind`` y ``attenuation_override_db`` opcional por banda. Se escribe
+  siempre al guardar, como spaces/openings.
 """
 
 from __future__ import annotations
@@ -58,6 +65,12 @@ from core.band import FrequencyBand
 from core.client import ClientDevice
 from core.geometry import Point2D, Rect, Segment2D
 from core.material import Material
+from core.obstacle import (
+    MAX_OBSTACLE_ATTENUATION_DB,
+    MAX_OBSTACLE_SIZE_M,
+    OBSTACLE_KINDS,
+    Obstacle,
+)
 from core.project import (
     SNR_TARGET_MAX_DB,
     SNR_TARGET_MIN_DB,
@@ -108,6 +121,10 @@ MAX_METADATA_ITEMS = 10_000
 MAX_SPACES = 5_000
 MAX_OPENINGS = 10_000
 MAX_OPENINGS_PER_WALL = 32
+# Fase 9 (decisión BO): límites de mobiliario. El techo de obstáculos
+# es el mismo que el de espacios (miles de objetos por plano es un
+# escenario extremo; el tamaño por lado cota el trabajo geométrico).
+MAX_OBSTACLES = 5_000
 
 
 class ProjectFormatError(Exception):
@@ -336,6 +353,24 @@ def _opening_to_dict(opening: Opening) -> dict[str, Any]:
     }
 
 
+def _obstacle_to_dict(obstacle: Obstacle) -> dict[str, Any]:
+    return {
+        "id": obstacle.id,
+        "name": obstacle.name,
+        "kind": obstacle.kind,
+        "rect": {
+            "x_m": obstacle.rect.x,
+            "y_m": obstacle.rect.y,
+            "width_m": obstacle.rect.width,
+            "height_m": obstacle.rect.height,
+        },
+        "material_id": obstacle.material.id,
+        "blocks_signal": obstacle.blocks_signal,
+        "attenuation_override_db": dict(obstacle.attenuation_override_db),
+        "metadata": dict(obstacle.metadata),
+    }
+
+
 def _floor_to_dict(floor: Floor) -> dict[str, Any]:
     return {
         "id": floor.id,
@@ -349,6 +384,8 @@ def _floor_to_dict(floor: Floor) -> dict[str, Any]:
         # Fase 8 (claves opcionales al LEER; siempre se escriben):
         "spaces": [_space_to_dict(space) for space in floor.spaces],
         "openings": [_opening_to_dict(opening) for opening in floor.openings],
+        # Fase 9 (mismo patrón; decisión BO):
+        "obstacles": [_obstacle_to_dict(o) for o in floor.obstacles],
     }
 
 
@@ -642,7 +679,7 @@ def _walls_from_list(
 
 
 def _rect_from_dict(value: Any, path: str) -> Rect:
-    """Rect de un espacio: dimensiones (0, MAX_DIMENSION_M] y coords acotadas."""
+    """Rect de espacio/obstáculo: dimensiones (0, MAX_DIMENSION_M] y coords acotadas."""
     data = _require_dict(value, path)
     x = _require_number(
         data.get("x_m"), f"{path}.x_m", minimum=-MAX_COORD_M, maximum=MAX_COORD_M
@@ -774,6 +811,81 @@ def _openings_from_list(
     return openings
 
 
+def _obstacles_from_list(
+    value: Any, path: str, materials_by_id: dict[str, Material]
+) -> list[Obstacle]:
+    """Obstáculos de un piso: ``material_id`` del catálogo + rect válido.
+
+    Fase 9 (decisión BO): entrada no confiable con los mismos niveles
+    de protección que spaces/openings — límite de lista, ids únicos,
+    strings acotados, números finitos, kind soportado, materiales
+    existentes y override en [0, MAX_OBSTACLE_ATTENUATION_DB].
+    """
+    items = _require_list(value, path, MAX_OBSTACLES)
+    obstacles: list[Obstacle] = []
+    for index, item in enumerate(items):
+        item_path = f"{path}[{index}]"
+        data = _require_dict(item, item_path)
+        for field in ("id", "rect", "material_id"):
+            if field not in data:
+                _fail(f"{item_path}.{field}: falta el campo obligatorio.")
+        material_id = _require_id(data["material_id"], f"{item_path}.material_id")
+        material = materials_by_id.get(material_id)
+        if material is None:
+            _fail(f"{item_path}.material_id: material desconocido {material_id!r}.")
+        rect = _rect_from_dict(data["rect"], f"{item_path}.rect")
+        if rect.width > MAX_OBSTACLE_SIZE_M or rect.height > MAX_OBSTACLE_SIZE_M:
+            _fail(
+                f"{item_path}.rect: el footprint debe medir ≤ "
+                f"{MAX_OBSTACLE_SIZE_M:g} m por lado "
+                f"(got {rect.width:g} × {rect.height:g})."
+            )
+        kind = _require_str(
+            data.get("kind", "furniture"), f"{item_path}.kind",
+            max_len=32, allow_empty=False,
+        )
+        if kind not in OBSTACLE_KINDS:
+            _fail(
+                f"{item_path}.kind: tipo no soportado {kind!r} "
+                f"(permitidos: {', '.join(OBSTACLE_KINDS)})."
+            )
+        raw_override = data.get("attenuation_override_db") or {}
+        override_data = _require_dict(
+            raw_override, f"{item_path}.attenuation_override_db"
+        )
+        override: dict[str, float] = {}
+        for band_id, raw_loss in override_data.items():
+            if not isinstance(band_id, str) or not band_id:
+                _fail(
+                    f"{item_path}.attenuation_override_db: las claves deben "
+                    "ser band ids no vacíos."
+                )
+            override[band_id] = _require_number(
+                raw_loss,
+                f"{item_path}.attenuation_override_db.{band_id}",
+                minimum=0.0, maximum=MAX_OBSTACLE_ATTENUATION_DB,
+            )
+        obstacles.append(
+            Obstacle(
+                id=_require_id(data["id"], f"{item_path}.id"),
+                name=_require_str(data.get("name", ""), f"{item_path}.name"),
+                rect=rect,
+                material=material,
+                kind=kind,
+                attenuation_override_db=override,
+                blocks_signal=_require_bool(
+                    data.get("blocks_signal", True),
+                    f"{item_path}.blocks_signal",
+                ),
+                metadata=_validate_metadata(
+                    data.get("metadata"), f"{item_path}.metadata"
+                ),
+            )
+        )
+    _require_unique([obstacle.id for obstacle in obstacles], path)
+    return obstacles
+
+
 def _floors_from_list(
     value: Any, path: str, materials_by_id: dict[str, Material]
 ) -> list[Floor]:
@@ -810,6 +922,10 @@ def _floors_from_list(
         openings = _openings_from_list(
             data.get("openings", []), f"{item_path}.openings", walls_by_id
         )
+        # Fase 9 (mismo patrón; ausentes ⇒ lista vacía — decisión BO):
+        obstacles = _obstacles_from_list(
+            data.get("obstacles", []), f"{item_path}.obstacles", materials_by_id
+        )
         floors.append(
             Floor(
                 id=_require_id(data["id"], f"{item_path}.id"),
@@ -818,6 +934,7 @@ def _floors_from_list(
                 walls=walls,
                 spaces=spaces,
                 openings=openings,
+                obstacles=obstacles,
                 elevation_m=_require_number(
                     data.get("elevation_m", 0.0),
                     f"{item_path}.elevation_m",

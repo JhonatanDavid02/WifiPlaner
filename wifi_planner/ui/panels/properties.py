@@ -2,6 +2,12 @@
 
 Fase 8: añade edición de espacios (nombre/función) y de aperturas
 (tipo/offsets) + creación de aperturas desde la pared seleccionada.
+
+Fase 9: añade el marco «Objeto» (nombre/tipo/material/override por
+banda) para obstáculos de mobiliario. El override se escribe como
+``band_id=dB`` separado por comas o punto y coma (p. ej.
+``band_5=6, band_2_4=4``); sustituye —nunca suma— la pérdida de
+referencia del material (decisión BM).
 """
 
 from __future__ import annotations
@@ -10,6 +16,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 from typing import Callable
 
+from core.obstacle import OBSTACLE_KINDS
 from core.wall import OPENING_KINDS
 from ui.session import EditorSession, SelectionKind
 
@@ -149,6 +156,56 @@ class PropertiesPanel(ttk.Frame):
         )
         opening_box.columnconfigure(1, weight=1)
 
+        # --- Objeto (fase 9: mobiliario con footprint y pérdida — BL/BM) ---
+        obstacle_box = ttk.LabelFrame(self, text="Objeto", padding=8)
+        obstacle_box.pack(fill="x", padx=8, pady=4)
+
+        ttk.Label(obstacle_box, text="Nombre:").grid(row=0, column=0, sticky="w")
+        self._obstacle_name_var = tk.StringVar()
+        self._obstacle_name_entry = ttk.Entry(
+            obstacle_box, textvariable=self._obstacle_name_var, width=18
+        )
+        self._obstacle_name_entry.grid(row=0, column=1, sticky="ew", pady=2)
+
+        ttk.Label(obstacle_box, text="Tipo:").grid(row=1, column=0, sticky="w")
+        self._obstacle_kind_var = tk.StringVar()
+        self._obstacle_kind_combo = ttk.Combobox(
+            obstacle_box,
+            textvariable=self._obstacle_kind_var,
+            values=list(OBSTACLE_KINDS),
+            state="readonly",
+            width=16,
+        )
+        self._obstacle_kind_combo.grid(row=1, column=1, sticky="ew", pady=2)
+
+        ttk.Label(obstacle_box, text="Material:").grid(row=2, column=0, sticky="w")
+        self._obstacle_material_var = tk.StringVar()
+        self._obstacle_material_combo = ttk.Combobox(
+            obstacle_box, textvariable=self._obstacle_material_var, state="readonly",
+            width=18,
+        )
+        self._obstacle_material_combo.grid(row=2, column=1, sticky="ew", pady=2)
+        self._obstacle_material_combo.bind(
+            "<<ComboboxSelected>>", self._obstacle_apply
+        )
+
+        ttk.Label(obstacle_box, text="Override (band=dB):").grid(
+            row=3, column=0, sticky="w"
+        )
+        self._obstacle_override_var = tk.StringVar()
+        self._obstacle_override_entry = ttk.Entry(
+            obstacle_box, textvariable=self._obstacle_override_var, width=18
+        )
+        self._obstacle_override_entry.grid(row=3, column=1, sticky="ew", pady=2)
+
+        self._obstacle_apply_btn = ttk.Button(
+            obstacle_box, text="Aplicar objeto", command=self._obstacle_apply
+        )
+        self._obstacle_apply_btn.grid(
+            row=4, column=0, columnspan=2, sticky="ew", pady=(6, 0)
+        )
+        obstacle_box.columnconfigure(1, weight=1)
+
         # --- Coordenadas AP / Cliente ---
         pos_box = ttk.LabelFrame(self, text="Posición (m)", padding=8)
         pos_box.pack(fill="x", padx=8, pady=4)
@@ -203,6 +260,7 @@ class PropertiesPanel(ttk.Frame):
         materials = self._session.project.materials
         values = [m.id for m in materials]
         self._material_combo["values"] = values
+        self._obstacle_material_combo["values"] = values
 
     def _set_text(self, widget: tk.Text, text: str) -> None:
         widget.configure(state="normal")
@@ -323,6 +381,32 @@ class PropertiesPanel(ttk.Frame):
                 self._thickness_entry.configure(state="disabled")
                 self._x_var.set("")
                 self._y_var.set("")
+        elif selection.kind == SelectionKind.OBSTACLE:
+            obstacle = session.selected_obstacle()
+            if obstacle:
+                rect = obstacle.rect
+                override = ", ".join(
+                    f"{band}={value:g}"
+                    for band, value in sorted(
+                        obstacle.attenuation_override_db.items()
+                    )
+                )
+                self._set_text(
+                    self._info,
+                    f"Objeto\n\n"
+                    f"ID: {obstacle.id}\n"
+                    f"Nombre: {obstacle.name}\n"
+                    f"Tipo: {obstacle.kind}\n"
+                    f"Material: {obstacle.material.name} "
+                    f"({obstacle.material.id})\n"
+                    f"Rect: ({rect.x:.2f}, {rect.y:.2f}) + "
+                    f"{rect.width:.2f} × {rect.height:.2f} m\n"
+                    f"Override: {override or '—'}",
+                )
+                self._material_combo.configure(state="disabled")
+                self._thickness_entry.configure(state="disabled")
+                self._x_var.set("")
+                self._y_var.set("")
 
         # --- Estados de los controles Fase 8 (recalculados en cada refresh) ---
         kind = selection.kind if selection is not None else None
@@ -331,6 +415,9 @@ class PropertiesPanel(ttk.Frame):
             session.selected_opening() if kind == SelectionKind.OPENING else None
         )
         wall = session.selected_wall() if kind == SelectionKind.WALL else None
+        obstacle = (
+            session.selected_obstacle() if kind == SelectionKind.OBSTACLE else None
+        )
 
         if space is not None:
             self._space_name_var.set(space.name)
@@ -366,6 +453,31 @@ class PropertiesPanel(ttk.Frame):
             self._opening_count_var.set("—")
             self._add_door_btn.configure(state="disabled")
             self._add_window_btn.configure(state="disabled")
+
+        # --- Estados del marco Objeto (Fase 9) ---
+        if obstacle is not None:
+            self._obstacle_name_var.set(obstacle.name)
+            self._obstacle_kind_var.set(obstacle.kind)
+            self._obstacle_material_var.set(obstacle.material.id)
+            self._obstacle_override_var.set(
+                ", ".join(
+                    f"{band}={value:g}"
+                    for band, value in sorted(
+                        obstacle.attenuation_override_db.items()
+                    )
+                )
+            )
+            self._obstacle_name_entry.configure(state="normal")
+            self._obstacle_kind_combo.configure(state="readonly")
+            self._obstacle_material_combo.configure(state="readonly")
+            self._obstacle_override_entry.configure(state="normal")
+            self._obstacle_apply_btn.configure(state="normal")
+        else:
+            self._obstacle_name_entry.configure(state="disabled")
+            self._obstacle_kind_combo.configure(state="disabled")
+            self._obstacle_material_combo.configure(state="disabled")
+            self._obstacle_override_entry.configure(state="disabled")
+            self._obstacle_apply_btn.configure(state="disabled")
 
         if session.last_simulation is not None or session.last_simulation_error:
             self._set_text(self._sim_text, session.simulation_summary_text())
@@ -479,5 +591,57 @@ class PropertiesPanel(ttk.Frame):
             self._session.add_opening(wall.id, kind)
         except (KeyError, ValueError) as exc:
             messagebox.showerror("Apertura", str(exc))
+            return
+        self._on_changed()
+
+    # ------------------------------------------------------------------
+    # Fase 9: obstáculos (CRUD vía sesión; la pérdida vive en engine/)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _parse_overrides(raw: str) -> dict[str, float]:
+        """``"band_5=6, band_2_4=4"`` → ``{"band_5": 6.0, ...}`` (vacío: {})."""
+        text = str(raw).strip()
+        if not text:
+            return {}
+        result: dict[str, float] = {}
+        for token in text.replace(";", ",").split(","):
+            token = token.strip()
+            if not token:
+                continue
+            if "=" not in token:
+                raise ValueError(
+                    f"Formato inválido: {token!r} (usa band_id=dB, "
+                    "separado por comas)."
+                )
+            key, _, value = token.partition("=")
+            key = key.strip()
+            if not key:
+                raise ValueError(f"Band id vacío en {token!r}.")
+            try:
+                result[key] = float(value.strip().replace(",", "."))
+            except ValueError:
+                raise ValueError(f"Valor inválido en {token!r}.") from None
+        return result
+
+    def _obstacle_apply(self, _event=None) -> None:
+        obstacle = self._session.selected_obstacle()
+        if not obstacle:
+            return
+        try:
+            override = self._parse_overrides(self._obstacle_override_var.get())
+        except ValueError as exc:
+            messagebox.showerror("Objeto", str(exc))
+            return
+        try:
+            self._session.set_obstacle_properties(
+                obstacle.id,
+                self._obstacle_name_var.get(),
+                kind=self._obstacle_kind_var.get(),
+                material_id=self._obstacle_material_var.get() or None,
+                attenuation_override_db=override,
+            )
+        except (KeyError, ValueError) as exc:
+            messagebox.showerror("Objeto", str(exc))
             return
         self._on_changed()
