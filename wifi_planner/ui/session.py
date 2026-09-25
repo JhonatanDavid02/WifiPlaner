@@ -135,6 +135,27 @@ def next_entity_id(existing_ids: Iterable[str], prefix: str) -> str:
 DEFAULT_FLOOR_WIDTH_M: float = 12.0
 DEFAULT_FLOOR_HEIGHT_M: float = 8.0
 
+#: Pasos de rejilla que ofrece la UI (metros) — Fase 14-E.
+GRID_STEP_CHOICES: tuple[float, ...] = (0.1, 0.25, 0.5, 1.0)
+
+
+def snap_point_to_grid(point: Point2D, step_m: float) -> Point2D:
+    """Redondea cada coordenada al múltiplo de ``step_m`` más cercano.
+
+    Función pura (sin Tk) usada por el canvas cuando la rejilla está
+    activa (``EditorSession.snap_to_grid``).
+
+    Raises:
+        ValueError: si el paso no es finito o es ≤ 0.
+    """
+    step = float(step_m)
+    if not math.isfinite(step) or step <= 0:
+        raise ValueError(f"Paso de rejilla inválido: {step_m}.")
+    return Point2D(
+        round(point.x / step) * step,
+        round(point.y / step) * step,
+    )
+
 
 def create_default_project(
     width_m: float = DEFAULT_FLOOR_WIDTH_M,
@@ -197,6 +218,10 @@ class EditorSession:
         # Fase 4: heatmap espacial
         self.grid_resolution_m: float = 0.5
         self.heatmap_enabled: bool = True
+        # Fase 14-E: rejilla visible + snap (preferencias de vista; la
+        # resolución del grid RF es grid_resolution_m, otra cosa).
+        self.grid_step_m: float = 0.5
+        self.snap_to_grid: bool = True
         # Fase 5: HEATMAP_ALL_APS (combinado) o id de un AP concreto.
         self.heatmap_ap_id: str = HEATMAP_ALL_APS
         # Fase 7: métrica visual del heatmap (vista; no persistible).
@@ -430,6 +455,23 @@ class EditorSession:
         self.grid_resolution_m = resolution
         self.invalidate_heatmap()
         self.mark_dirty()
+
+    def set_grid_step(self, step_m: float) -> None:
+        """Paso de la rejilla visible y del snap en metros (Fase 14-E).
+
+        Es una preferencia de vista: NO se marca ``dirty`` ni se
+        persiste (schema v1 intacto).
+        """
+        step = float(step_m)
+        if not math.isfinite(step) or step <= 0:
+            raise ValueError(f"Paso de rejilla debe ser > 0 (got {step_m}).")
+        if step > 1000:
+            raise ValueError(f"Paso de rejilla demasiado grande: {step} m.")
+        self.grid_step_m = step
+
+    def set_snap_to_grid(self, enabled: bool) -> None:
+        """Activa/desactiva el snap a rejilla (preferencia de vista)."""
+        self.snap_to_grid = bool(enabled)
 
     def apply_rf_settings(
         self,

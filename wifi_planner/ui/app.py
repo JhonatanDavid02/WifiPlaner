@@ -20,6 +20,7 @@ from ui.panels.toolbar import BAND_LABEL_BY_ID
 from ui.session import (
     DEFAULT_FLOOR_HEIGHT_M,
     DEFAULT_FLOOR_WIDTH_M,
+    GRID_STEP_CHOICES,
     EditorSession,
     HEATMAP_ALL_APS,
     Tool,
@@ -93,6 +94,34 @@ class WifiPlannerApp(tk.Tk):
         file_menu.add_separator()
         file_menu.add_command(label="Salir", command=self._on_close)
         menubar.add_cascade(label="Archivo", menu=file_menu)
+
+        # Menú Ver (Fase 14-E): zoom, pan (botón central) y rejilla.
+        view_menu = tk.Menu(menubar, tearoff=0)
+        view_menu.add_command(
+            label="Acercar", accelerator="Ctrl++", command=self._on_zoom_in
+        )
+        view_menu.add_command(
+            label="Alejar", accelerator="Ctrl+-", command=self._on_zoom_out
+        )
+        view_menu.add_command(
+            label="Vista normal", accelerator="Ctrl+0", command=self._on_zoom_reset
+        )
+        view_menu.add_separator()
+        self._snap_var = tk.BooleanVar(value=self.session.snap_to_grid)
+        view_menu.add_checkbutton(
+            label="Ajustar a rejilla",
+            variable=self._snap_var,
+            command=self._on_snap_toggle,
+        )
+        self._grid_step_var = tk.DoubleVar(value=self.session.grid_step_m)
+        for step in GRID_STEP_CHOICES:
+            view_menu.add_radiobutton(
+                label=f"Paso de rejilla {step:g} m",
+                variable=self._grid_step_var,
+                value=step,
+                command=self._on_grid_step,
+            )
+        menubar.add_cascade(label="Ver", menu=view_menu)
         self.config(menu=menubar)
 
     def _on_file_new(self) -> None:
@@ -185,6 +214,8 @@ class WifiPlannerApp(tk.Tk):
 
     def _after_document_change(self) -> None:
         """Reajusta la UI tras cargar/crear un proyecto (sin estado parcial)."""
+        # Documento nuevo = vista normal (zoom/pan de lo anterior no aplica).
+        self.viewport.reset_view()
         self.viewport.set_world_size(
             self.session.floor_width_m, self.session.floor_height_m
         )
@@ -291,6 +322,11 @@ class WifiPlannerApp(tk.Tk):
         self.bind("<Control-o>", lambda _e: self._on_file_open())
         self.bind("<Control-s>", lambda _e: self._on_file_save())
         self.bind("<Control-Shift-S>", lambda _e: self._on_file_save_as())
+        # Atajos de zoom (menú Ver, Fase 14-E).
+        self.bind("<Control-plus>", lambda _e: self._on_zoom_in())
+        self.bind("<Control-equal>", lambda _e: self._on_zoom_in())
+        self.bind("<Control-minus>", lambda _e: self._on_zoom_out())
+        self.bind("<Control-0>", lambda _e: self._on_zoom_reset())
 
         def make_tool_handler(tool: Tool):
             def handler(event):
@@ -499,6 +535,39 @@ class WifiPlannerApp(tk.Tk):
             on_apply=apply,
         )
 
+    # ------------------------------------------------------------------
+    # Ver (Fase 14-E): zoom / rejilla
+    # ------------------------------------------------------------------
+
+    def _zoom_viewport(self, factor: float) -> None:
+        """Zoom al centro del lienzo (la rueda hace zoom al cursor)."""
+        vp = self.viewport
+        vp.zoom_at(factor, vp.canvas_width_px / 2.0, vp.canvas_height_px / 2.0)
+        self.canvas.render_project()
+        self._update_status_coords(None, None)
+
+    def _on_zoom_in(self) -> None:
+        self._zoom_viewport(EditorCanvas.ZOOM_STEP)
+
+    def _on_zoom_out(self) -> None:
+        self._zoom_viewport(1.0 / EditorCanvas.ZOOM_STEP)
+
+    def _on_zoom_reset(self) -> None:
+        self.viewport.reset_view()
+        self.canvas.render_project()
+        self._update_status_coords(None, None)
+
+    def _on_snap_toggle(self) -> None:
+        self.session.set_snap_to_grid(self._snap_var.get())
+
+    def _on_grid_step(self) -> None:
+        try:
+            self.session.set_grid_step(float(self._grid_step_var.get()))
+        except ValueError as exc:
+            messagebox.showerror("Rejilla", str(exc), parent=self)
+            return
+        self.canvas.render_project()
+
     def _on_simulate(self) -> None:
         """Simulación puntual (resumen) + heatmap del grid."""
         try:
@@ -539,7 +608,8 @@ class WifiPlannerApp(tk.Tk):
             heat = "actualizado"
         self.status.configure(
             text=f"{coords}    |    Espacio: {dims}    |    "
-            f"Escala: {scale:.1f} px/m | Res. grid: {self.session.grid_resolution_m:g} m | "
+            f"Escala: {scale:.1f} px/m | Zoom: {self.viewport.zoom:.0%} | "
+            f"Res. grid: {self.session.grid_resolution_m:g} m | "
             f"Heatmap: {heat} | Herramienta: {self.session.tool.value}"
         )
 

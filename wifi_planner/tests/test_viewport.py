@@ -109,3 +109,92 @@ def test_large_canvas_still_isotropic():
     dy = vp.world_to_screen(Point2D(0, 1))[1] - p0[1]
     assert dx == pytest.approx(dy)
     assert dx == pytest.approx(vp.scale)
+
+
+# ---------------------------------------------------------------------------
+# Zoom / pan (Fase 14-E)
+# ---------------------------------------------------------------------------
+
+def _zoom_vp() -> Viewport:
+    return Viewport(world_width_m=12.0, world_height_m=8.0,
+                    canvas_width_px=800, canvas_height_px=600, margin_px=40)
+
+
+def test_zoom_multiplies_scale():
+    vp = _zoom_vp()
+    base = vp.scale
+    vp.zoom = 2.0
+    assert vp.scale == pytest.approx(base * 2.0)
+
+
+def test_zoom_at_keeps_world_point_under_cursor():
+    vp = _zoom_vp()
+    x_px, y_px = 321.0, 245.0
+    world_before = vp.screen_to_world(x_px, y_px)
+    vp.zoom_at(1.25, x_px, y_px)
+    world_after = vp.screen_to_world(x_px, y_px)
+    assert world_after.x == pytest.approx(world_before.x, abs=1e-9)
+    assert world_after.y == pytest.approx(world_before.y, abs=1e-9)
+
+
+def test_zoom_at_clamps_to_limits():
+    from ui.viewport import MAX_ZOOM, MIN_ZOOM
+
+    vp = _zoom_vp()
+    vp.zoom_at(10.0 ** 9, 100.0, 100.0)
+    assert vp.zoom == pytest.approx(MAX_ZOOM)
+    vp.zoom_at(10.0 ** -9, 100.0, 100.0)
+    assert vp.zoom == pytest.approx(MIN_ZOOM)
+
+
+def test_zoom_at_rejects_invalid_factor():
+    vp = _zoom_vp()
+    for bad in (0.0, -1.5, float("nan"), float("inf")):
+        with pytest.raises(ValueError):
+            vp.zoom_at(bad, 10.0, 10.0)
+
+
+def test_constructor_rejects_invalid_zoom():
+    with pytest.raises(ValueError):
+        Viewport(zoom=0.0)
+    with pytest.raises(ValueError):
+        Viewport(zoom=float("nan"))
+
+
+def test_pan_by_shifts_origins():
+    vp = _zoom_vp()
+    ox, oy = vp.origin_x_px, vp.origin_y_px
+    vp.pan_by(25.0, -10.0)
+    assert vp.origin_x_px == pytest.approx(ox + 25.0)
+    assert vp.origin_y_px == pytest.approx(oy - 10.0)
+
+
+def test_pan_rejects_non_finite():
+    vp = _zoom_vp()
+    with pytest.raises(ValueError):
+        vp.pan_by(float("nan"), 0.0)
+    with pytest.raises(ValueError):
+        vp.pan_by(0.0, float("inf"))
+
+
+def test_reset_view_restores_fit():
+    vp = _zoom_vp()
+    base_scale = vp.scale
+    vp.zoom_at(3.0, 400.0, 300.0)
+    vp.pan_by(50.0, 40.0)
+    vp.reset_view()
+    assert vp.zoom == pytest.approx(1.0)
+    assert vp.pan_x_px == pytest.approx(0.0)
+    assert vp.pan_y_px == pytest.approx(0.0)
+    assert vp.scale == pytest.approx(base_scale)
+
+
+def test_round_trip_still_holds_after_zoom_and_pan():
+    vp = _zoom_vp()
+    vp.zoom_at(1.6, 200.0, 150.0)
+    vp.pan_by(-30.0, 20.0)
+    original = Point2D(7.25, 2.5)
+    sx, sy = vp.world_to_screen(original)
+    back = vp.screen_to_world(sx, sy)
+    assert back.x == pytest.approx(original.x, abs=1e-9)
+    assert back.y == pytest.approx(original.y, abs=1e-9)

@@ -20,7 +20,7 @@ from typing import Callable
 from core.geometry import Point2D, Segment2D
 from core.wall import group_openings_by_wall, wall_point_at_offset
 from ui import theme
-from ui.session import EditorSession, SelectionKind, Tool
+from ui.session import EditorSession, SelectionKind, Tool, snap_point_to_grid
 from ui.viewport import Viewport
 
 OPENING_COLORS = {
@@ -39,6 +39,8 @@ class EditorCanvas(tk.Canvas):
 
     HIT_RADIUS_PX = 8
     SNAP_RADIUS_PX = 10
+    #: Factor de zoom por paso de rueda (Fase 14-E).
+    ZOOM_STEP = 1.25
 
     def __init__(
         self,
@@ -68,6 +70,8 @@ class EditorCanvas(tk.Canvas):
         self._drag_wall_endpoint: tuple[str, str] | None = None
         self._drag_space_id: str | None = None
         self._drag_space_offset: Point2D = Point2D(0.0, 0.0)
+        # Fase 14-E: último punto del arrastre de pan (botón central).
+        self._pan_last: tuple[float, float] | None = None
         self._preview_end: Point2D | None = None
         # Imagen PIL del heatmap (se re-aplica tras cada render completo).
         self._heatmap_image = None
@@ -79,6 +83,13 @@ class EditorCanvas(tk.Canvas):
         self.bind("<ButtonPress-1>", self._on_press)
         self.bind("<B1-Motion>", self._on_drag)
         self.bind("<ButtonRelease-1>", self._on_release)
+        # Fase 14-E: zoom con rueda y pan con botón central.
+        self.bind("<MouseWheel>", self._on_mousewheel)
+        self.bind("<Button-4>", self._on_wheel_up)
+        self.bind("<Button-5>", self._on_wheel_down)
+        self.bind("<ButtonPress-2>", self._on_pan_press)
+        self.bind("<B2-Motion>", self._on_pan_motion)
+        self.bind("<ButtonRelease-2>", self._on_pan_release)
         self.bind("<Delete>", self._on_delete_key)
         self.bind("<BackSpace>", self._on_delete_key)
         self.focus_set()
@@ -105,6 +116,7 @@ class EditorCanvas(tk.Canvas):
         self._drag_wall_id = None
         self._drag_wall_endpoint = None
         self._drag_space_id = None
+        self._pan_last = None
         self._preview_end = None
 
     def draw_heatmap(self, image) -> None:
@@ -122,10 +134,16 @@ class EditorCanvas(tk.Canvas):
         self._heatmap_photo = None
         if self._heatmap_image is None:
             return
-        from PIL import ImageTk
+        from PIL import Image, ImageTk
 
-        x1, y1, _x2, _y2 = self.viewport.floor_rect_px
-        self._heatmap_photo = ImageTk.PhotoImage(self._heatmap_image)
+        x1, y1, x2, y2 = self.viewport.floor_rect_px
+        # La imagen se generó a la escala del momento; al hacer zoom/pan
+        # se reescala al rect del piso actual (Fase 14-E).
+        target = (max(int(round(x2 - x1)), 1), max(int(round(y2 - y1)), 1))
+        image = self._heatmap_image
+        if image.size != target:
+            image = image.resize(target, Image.BILINEAR)
+        self._heatmap_photo = ImageTk.PhotoImage(image)
         # tag "heatmap": capa intermedia; no interfiere con hit-testing
         # (la selección usa coordenadas de mundo, no ids de Canvas).
         self.create_image(x1, y1, image=self._heatmap_photo, anchor="nw", tags=("heatmap",))
@@ -422,8 +440,12 @@ class EditorCanvas(tk.Canvas):
 
     def _draw_grid(self) -> None:
         vp = self.viewport
-        step_m = 1.0
+        step_m = self.session.grid_step_m
         w, h = self.session.floor_width_m, self.session.floor_height_m
+        # Pasos muy finos con la vista alejada saturarían el lienzo:
+        # se dobla el paso (solo visual) hasta un máximo razonable.
+        while step_m > 0 and (w / step_m > 300 or h / step_m > 300):
+            step_m *= 2
         x = 0.0
         while x <= w + 1e-9:
             sx1, sy1 = vp.world_to_screen(Point2D(x, 0))
@@ -480,6 +502,11 @@ class EditorCanvas(tk.Canvas):
                 return Point2D(world.x, start.y)  # horizontal
             if abs(world.x - start.x) <= tol_m and abs(world.y - start.y) > tol_m:
                 return Point2D(start.x, world.y)  # vertical
+
+        # 3) Rejilla (Fase 14-E): redondeo al paso configurado. Va después
+        # de extremos/ejes para no deshacer esos snaps más precisos.
+        if self.session.snap_to_grid:
+            return snap_point_to_grid(world, self.session.grid_step_m)
         return world
 
     # ------------------------------------------------------------------
@@ -589,6 +616,41 @@ class EditorCanvas(tk.Canvas):
 
     def _cursor_world(self, event) -> Point2D:
         return self.viewport.screen_to_world(event.x, event.y)
+
+    # ------------------------------------------------------------------
+    # Zoom / pan (Fase 14-E): solo cambian la vista, nunca el modelo
+    # ------------------------------------------------------------------
+
+    def _zoom_by_at(self, factor: float, x_px: float, y_px: float) -> None:
+        self.viewport.zoom_at(factor, x_px, y_px)
+        self.render_project()
+
+    def _on_mousewheel(self, event) -> None:
+        if getattr(event, "delta", 0) == 0:
+            return
+        factor = self.ZOOM_STEP if event.delta > 0 else 1.0 / self.ZOOM_STEP
+        self._zoom_by_at(factor, event.x, event.y)
+
+    def _on_wheel_up(self, event) -> None:
+        self._zoom_by_at(self.ZOOM_STEP, event.x, event.y)
+
+    def _on_wheel_down(self, event) -> None:
+        self._zoom_by_at(1.0 / self.ZOOM_STEP, event.x, event.y)
+
+    def _on_pan_press(self, event) -> None:
+        self._pan_last = (event.x, event.y)
+
+    def _on_pan_motion(self, event) -> None:
+        if self._pan_last is None:
+            return
+        dx = event.x - self._pan_last[0]
+        dy = event.y - self._pan_last[1]
+        self._pan_last = (event.x, event.y)
+        self.viewport.pan_by(dx, dy)
+        self.render_project()
+
+    def _on_pan_release(self, _event) -> None:
+        self._pan_last = None
 
     def _on_motion(self, event) -> None:
         world = self._cursor_world(event)
