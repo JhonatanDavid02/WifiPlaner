@@ -128,10 +128,32 @@ def next_entity_id(existing_ids: Iterable[str], prefix: str) -> str:
     return f"{prefix}-{max_n + 1:03d}"
 
 
-def create_default_project() -> Project:
-    """Proyecto inicial del editor: 12 m × 8 m, sin elementos."""
+#: Tamaño de ejemplo por defecto del proyecto nuevo (explícito, no un
+#: fallback): el diálogo «Nuevo…» permite cambiarlo y los proyectos
+#: abiertos usan siempre sus propias dimensiones (Fase 14-B).
+DEFAULT_FLOOR_WIDTH_M: float = 12.0
+DEFAULT_FLOOR_HEIGHT_M: float = 8.0
+
+
+def create_default_project(
+    width_m: float = DEFAULT_FLOOR_WIDTH_M,
+    height_m: float = DEFAULT_FLOOR_HEIGHT_M,
+) -> Project:
+    """Proyecto inicial del editor (12 m × 8 m por defecto, sin elementos).
+
+    Args:
+        width_m: Ancho del piso en metros (> 0, ≤ 10000).
+        height_m: Alto del piso en metros (> 0, ≤ 10000).
+
+    Raises:
+        ValueError: si las dimensiones no son válidas (sin fallback).
+    """
     from config import load_config
 
+    if width_m <= 0 or height_m <= 0:
+        raise ValueError(f"Dimensiones deben ser > 0 m (got {width_m}×{height_m}).")
+    if width_m > 10_000 or height_m > 10_000:
+        raise ValueError("Máximo 10000 m por lado.")
     cfg = load_config()
     project = Project(
         name="Wi-Fi Planner — Proyecto nuevo",
@@ -143,8 +165,8 @@ def create_default_project() -> Project:
     floor = Floor(
         id="FLOOR-001",
         name="Planta baja",
-        width_m=12.0,
-        height_m=8.0,
+        width_m=width_m,
+        height_m=height_m,
     )
     project.floors.append(floor)
     return project
@@ -240,9 +262,22 @@ class EditorSession:
         project, editor_state = _load_document(path)
         self._replace_document(project, editor_state, path=str(path))
 
-    def new_project(self) -> None:
-        """Crea un proyecto vacío (12 × 8 m) y limpia el documento activo."""
-        self._replace_document(create_default_project(), EditorState(), path=None)
+    def new_project(
+        self,
+        width_m: float = DEFAULT_FLOOR_WIDTH_M,
+        height_m: float = DEFAULT_FLOOR_HEIGHT_M,
+    ) -> None:
+        """Crea un proyecto vacío con las dimensiones dadas y limpia el documento.
+
+        Args:
+            width_m: Ancho del piso en metros (lo elige el usuario en la UI).
+            height_m: Alto del piso en metros (lo elige el usuario en la UI).
+
+        Raises:
+            ValueError: dimensiones inválidas (el documento queda intacto).
+        """
+        project = create_default_project(width_m, height_m)
+        self._replace_document(project, EditorState(), path=None)
 
     def _replace_document(
         self, project: Project, editor_state: EditorState, path: str | None
@@ -279,18 +314,30 @@ class EditorSession:
     @property
     def floor(self) -> Floor:
         if not self.project.floors:
-            self.project.floors.append(
-                Floor(id="FLOOR-001", name="Planta baja", width_m=12.0, height_m=8.0)
-            )
+            # Se crea el contenedor SIN dimensiones: el tamaño nunca se
+            # inventa aquí; se pide explícitamente (Fase 14-B).
+            self.project.floors.append(Floor(id="FLOOR-001", name="Planta baja"))
         return self.project.floors[0]
 
     @property
     def floor_width_m(self) -> float:
-        return float(self.floor.width_m or 12.0)
+        width = self.floor.width_m
+        if width is None:
+            raise ValueError(
+                "El piso no tiene ancho definido: usa set_floor_dimensions() "
+                "o el diálogo «Dimensiones…» antes de simular o dibujar."
+            )
+        return float(width)
 
     @property
     def floor_height_m(self) -> float:
-        return float(self.floor.height_m or 8.0)
+        height = self.floor.height_m
+        if height is None:
+            raise ValueError(
+                "El piso no tiene alto definido: usa set_floor_dimensions() "
+                "o el diálogo «Dimensiones…» antes de simular o dibujar."
+            )
+        return float(height)
 
     def set_floor_dimensions(self, width_m: float, height_m: float) -> None:
         """Valida y aplica nuevas dimensiones del espacio (metros).

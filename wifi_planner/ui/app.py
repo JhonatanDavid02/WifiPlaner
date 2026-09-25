@@ -17,7 +17,13 @@ from ui.dialogs import (
 from ui.editor_canvas import EditorCanvas
 from ui.panels import PropertiesPanel, Toolbar
 from ui.panels.toolbar import BAND_LABEL_BY_ID
-from ui.session import EditorSession, HEATMAP_ALL_APS, Tool
+from ui.session import (
+    DEFAULT_FLOOR_HEIGHT_M,
+    DEFAULT_FLOOR_WIDTH_M,
+    EditorSession,
+    HEATMAP_ALL_APS,
+    Tool,
+)
 from ui.viewport import Viewport
 
 # Debounce del heatmap (ms). El valor es configurable por instancia.
@@ -92,7 +98,20 @@ class WifiPlannerApp(tk.Tk):
     def _on_file_new(self) -> None:
         if not self._confirm_discard_changes():
             return
-        self.session.new_project()
+        # El usuario elige las dimensiones: nada de 12×8 implícito (14-B).
+        ProjectDimensionsDialog(
+            self,
+            width_m=DEFAULT_FLOOR_WIDTH_M,
+            height_m=DEFAULT_FLOOR_HEIGHT_M,
+            on_apply=self._create_new_project,
+        )
+
+    def _create_new_project(self, width_m: float, height_m: float) -> None:
+        try:
+            self.session.new_project(width_m=width_m, height_m=height_m)
+        except ValueError as exc:
+            messagebox.showerror("Proyecto nuevo", str(exc), parent=self)
+            return
         self._after_document_change()
 
     def _on_file_open(self) -> None:
