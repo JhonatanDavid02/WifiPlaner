@@ -73,6 +73,8 @@ class Tool(str, Enum):
     SPACE = "space"
     # Fase 9: mobiliario/obstáculos (tecla "o", patrón de 2 clics).
     OBSTACLE = "obstacle"
+    # Fase 14-F: medir distancias en metros (tecla "m").
+    MEASURE = "measure"
 
 
 class HeatmapMetric(str, Enum):
@@ -222,6 +224,9 @@ class EditorSession:
         # resolución del grid RF es grid_resolution_m, otra cosa).
         self.grid_step_m: float = 0.5
         self.snap_to_grid: bool = True
+        # Fase 14-F: estado de la herramienta medir (vista; no persistible).
+        self.measure_anchor: Point2D | None = None
+        self.measure_cursor: Point2D | None = None
         # Fase 5: HEATMAP_ALL_APS (combinado) o id de un AP concreto.
         self.heatmap_ap_id: str = HEATMAP_ALL_APS
         # Fase 7: métrica visual del heatmap (vista; no persistible).
@@ -319,6 +324,8 @@ class EditorSession:
         self.project = project
         self.active_floor_id = None
         self.project_path = path
+        self.measure_anchor = None
+        self.measure_cursor = None
         self.tool = Tool.SELECT
         self.selection = None
         self.wall_drag_start = None
@@ -472,6 +479,39 @@ class EditorSession:
     def set_snap_to_grid(self, enabled: bool) -> None:
         """Activa/desactiva el snap a rejilla (preferencia de vista)."""
         self.snap_to_grid = bool(enabled)
+
+    # ------------------------------------------------------------------
+    # Fase 14-F: herramienta medir (siempre en metros, nunca en píxeles)
+    # ------------------------------------------------------------------
+
+    def set_measure_anchor(self, point: Point2D | None) -> None:
+        """Fija el primer punto de la medición (None la limpia).
+
+        Raises:
+            ValueError: si el punto no es finito.
+        """
+        if point is not None:
+            x, y = self._finite_point(point)
+            point = Point2D(x, y)
+        self.measure_anchor = point
+        self.measure_cursor = point
+
+    def set_measure_cursor(self, point: Point2D | None) -> None:
+        """Actualiza el segundo punto (el que sigue al cursor).
+
+        Raises:
+            ValueError: si el punto no es finito.
+        """
+        if point is not None:
+            x, y = self._finite_point(point)
+            point = Point2D(x, y)
+        self.measure_cursor = point
+
+    def measure_distance_m(self) -> float | None:
+        """Distancia ancla→cursor en METROS, o None si no hay medición."""
+        if self.measure_anchor is None or self.measure_cursor is None:
+            return None
+        return self.measure_anchor.distance_to(self.measure_cursor)
 
     def apply_rf_settings(
         self,
@@ -1107,6 +1147,9 @@ class EditorSession:
         self.wall_drag_start = None
         self.space_drag_start = None
         self.obstacle_drag_start = None
+        # Cambiar de herramienta descarta una medición en curso (14-F).
+        self.measure_anchor = None
+        self.measure_cursor = None
         if tool != Tool.SELECT:
             self.selection = None
 

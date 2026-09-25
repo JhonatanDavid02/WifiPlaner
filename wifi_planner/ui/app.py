@@ -349,6 +349,8 @@ class WifiPlannerApp(tk.Tk):
         # Fase 9: "o" = Objeto/obstáculo (sin conflicto con Ctrl+O:
         # el handler ignora la tecla con Ctrl pulsado).
         self.bind("o", make_tool_handler(Tool.OBSTACLE))
+        # Fase 14-F: "m" = Medir distancias en metros.
+        self.bind("m", make_tool_handler(Tool.MEASURE))
 
     def _initial_render(self) -> None:
         w = self.canvas.winfo_width()

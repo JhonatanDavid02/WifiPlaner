@@ -43,6 +43,8 @@ OBSTACLE_FILL = "#6b4a2f"
 OBSTACLE_OUTLINE = "#b08050"
 OBSTACLE_SELECTED = "#4f9cf9"
 OBSTACLE_PREVIEW = "#4f9cf9"
+#: Herramienta medir (Fase 14-F): línea y etiqueta de distancia.
+MEASURE_COLOR = "#e5c07b"
 
 # Controles ttk (estilo)
 STYLE_MAP = {

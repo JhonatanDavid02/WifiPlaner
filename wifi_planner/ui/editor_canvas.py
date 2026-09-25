@@ -212,6 +212,25 @@ class EditorCanvas(tk.Canvas):
                     fill="", outline=theme.OBSTACLE_PREVIEW, width=2, dash=(4, 3),
                 )
 
+        # Fase 14-F: medición en curso (línea punteada + distancia en metros).
+        if self.session.tool == Tool.MEASURE and self.session.measure_anchor is not None:
+            cursor = self.session.measure_cursor or self.session.measure_anchor
+            a = vp.world_to_screen(self.session.measure_anchor)
+            b = vp.world_to_screen(cursor)
+            self.create_line(
+                a[0], a[1], b[0], b[1],
+                fill=theme.MEASURE_COLOR, width=2, dash=(6, 4),
+            )
+            distance = self.session.measure_distance_m()
+            if distance is not None:
+                self.create_text(
+                    (a[0] + b[0]) / 2.0,
+                    (a[1] + b[1]) / 2.0 - 14,
+                    text=f"{distance:.2f} m",
+                    fill=theme.MEASURE_COLOR,
+                    font=("Segoe UI", 10, "bold"),
+                )
+
         # 4) APs / clientes (siempre visibles sobre el heatmap)
         self._draw_aps_and_clients()
 
@@ -656,6 +675,14 @@ class EditorCanvas(tk.Canvas):
         world = self._cursor_world(event)
         self.on_cursor(world.x, world.y)
 
+        # Fase 14-F: la medición sigue al cursor (en metros, con snap).
+        if (
+            self.session.tool == Tool.MEASURE
+            and self.session.measure_anchor is not None
+        ):
+            self.session.set_measure_cursor(self._snap_world(world))
+            self.render_project()
+
         if self.session.tool == Tool.WALL and self.session.wall_drag_start is not None:
             self._preview_end = self._snap_world(world)
             self.render_project()
@@ -788,6 +815,13 @@ class EditorCanvas(tk.Canvas):
                     self._drag_space_offset = Point2D(
                         world.x - space.rect.x, world.y - space.rect.y
                     )
+            self.on_model_changed()
+            return
+
+        if tool == Tool.MEASURE:
+            # Fase 14-F: cada clic fija un nuevo punto de partida.
+            self.session.set_measure_anchor(world)
+            self.render_project()
             self.on_model_changed()
             return
 
