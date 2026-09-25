@@ -95,6 +95,18 @@ class WifiPlannerApp(tk.Tk):
         file_menu.add_command(label="Salir", command=self._on_close)
         menubar.add_cascade(label="Archivo", menu=file_menu)
 
+        # Menú Editar (Fase 14-G): deshacer/rehacer por snapshots.
+        edit_menu = tk.Menu(menubar, tearoff=0)
+        edit_menu.add_command(
+            label="Deshacer", accelerator="Ctrl+Z", command=self._on_undo
+        )
+        edit_menu.add_command(
+            label="Rehacer", accelerator="Ctrl+Y", command=self._on_redo
+        )
+        edit_menu.add_separator()
+        edit_menu.add_command(label="Eliminar", command=self._on_delete)
+        menubar.add_cascade(label="Editar", menu=edit_menu)
+
         # Menú Ver (Fase 14-E): zoom, pan (botón central) y rejilla.
         view_menu = tk.Menu(menubar, tearoff=0)
         view_menu.add_command(
@@ -327,6 +339,10 @@ class WifiPlannerApp(tk.Tk):
         self.bind("<Control-equal>", lambda _e: self._on_zoom_in())
         self.bind("<Control-minus>", lambda _e: self._on_zoom_out())
         self.bind("<Control-0>", lambda _e: self._on_zoom_reset())
+        # Atajos de editar (menú Editar, Fase 14-G).
+        self.bind("<Control-z>", lambda _e: self._on_undo())
+        self.bind("<Control-y>", lambda _e: self._on_redo())
+        self.bind("<Control-Shift-Z>", lambda _e: self._on_redo())
 
         def make_tool_handler(tool: Tool):
             def handler(event):
@@ -536,6 +552,18 @@ class WifiPlannerApp(tk.Tk):
             height_m=self.session.floor_height_m,
             on_apply=apply,
         )
+
+    # ------------------------------------------------------------------
+    # Editar (Fase 14-G): deshacer / rehacer
+    # ------------------------------------------------------------------
+
+    def _on_undo(self) -> None:
+        if self.session.undo():
+            self._on_model_changed()
+
+    def _on_redo(self) -> None:
+        if self.session.redo():
+            self._on_model_changed()
 
     # ------------------------------------------------------------------
     # Ver (Fase 14-E): zoom / rejilla

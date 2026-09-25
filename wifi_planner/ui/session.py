@@ -7,8 +7,10 @@ la invoca y luego vuelve a dibujar desde el Project (fuente de verdad).
 from __future__ import annotations
 
 import math
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from enum import Enum
+from functools import wraps
 from typing import Iterable
 
 from core.access_point import AccessPoint
@@ -140,6 +142,36 @@ DEFAULT_FLOOR_HEIGHT_M: float = 8.0
 #: Pasos de rejilla que ofrece la UI (metros) — Fase 14-E.
 GRID_STEP_CHOICES: tuple[float, ...] = (0.1, 0.25, 0.5, 1.0)
 
+#: Profundidad máxima de la pila de deshacer (Fase 14-G).
+MAX_UNDO_STEPS = 50
+
+
+def undoable(method):
+    """Registra el estado previo del documento si la operación termina bien.
+
+    Decorador de los métodos mutantes de ``EditorSession``: captura una
+    copia profunda de ``project`` (más la selección) antes de ejecutar y
+    solo confirma el paso si NO hubo excepción — una operación rechazada
+    no deja pasos huérfanos. Las llamadas anidadas (p. ej. ``move_wall``
+    → ``set_wall_endpoints``) se anotan una sola vez, y durante
+    undo/redo la grabación queda desactivada.
+    """
+
+    @wraps(method)
+    def wrapper(self, *args, **kwargs):
+        if not self._undo_enabled or self._undo_recording:
+            return method(self, *args, **kwargs)
+        previous = (deepcopy(self.project), self.selection)
+        self._undo_recording = True
+        try:
+            result = method(self, *args, **kwargs)
+        finally:
+            self._undo_recording = False
+        self._push_undo(previous)
+        return result
+
+    return wrapper
+
 
 def snap_point_to_grid(point: Point2D, step_m: float) -> Point2D:
     """Redondea cada coordenada al múltiplo de ``step_m`` más cercano.
@@ -227,6 +259,11 @@ class EditorSession:
         # Fase 14-F: estado de la herramienta medir (vista; no persistible).
         self.measure_anchor: Point2D | None = None
         self.measure_cursor: Point2D | None = None
+        # Fase 14-G: deshacer/rehacer por snapshots del documento.
+        self._undo_stack: list = []
+        self._redo_stack: list = []
+        self._undo_enabled: bool = True
+        self._undo_recording: bool = False
         # Fase 5: HEATMAP_ALL_APS (combinado) o id de un AP concreto.
         self.heatmap_ap_id: str = HEATMAP_ALL_APS
         # Fase 7: métrica visual del heatmap (vista; no persistible).
@@ -251,6 +288,65 @@ class EditorSession:
         if path is not None:
             self.project_path = str(path)
         self.dirty = False
+
+    # ------------------------------------------------------------------
+    # Fase 14-G: deshacer / rehacer (snapshots del documento)
+    # ------------------------------------------------------------------
+
+    def _push_undo(self, snapshot) -> None:
+        self._undo_stack.append(snapshot)
+        if len(self._undo_stack) > MAX_UNDO_STEPS:
+            del self._undo_stack[0]
+        # Una acción nueva invalida la rama de rehacer.
+        self._redo_stack.clear()
+
+    def can_undo(self) -> bool:
+        """True si hay al menos un paso para deshacer."""
+        return bool(self._undo_stack)
+
+    def can_redo(self) -> bool:
+        """True si hay al menos un paso para rehacer."""
+        return bool(self._redo_stack)
+
+    def clear_history(self) -> None:
+        """Vacía deshacer/rehacer (al abrir o crear un documento)."""
+        self._undo_stack.clear()
+        self._redo_stack.clear()
+
+    def undo(self) -> bool:
+        """Restaura el estado anterior del documento. True si había paso.
+
+        El estado actual se mueve a la pila de rehacer; el documento
+        queda como ``dirty`` (ya no coincide con lo guardado en disco).
+        """
+        if not self._undo_stack:
+            return False
+        current = (deepcopy(self.project), self.selection)
+        previous_project, previous_selection = self._undo_stack.pop()
+        self._redo_stack.append(current)
+        self._apply_history(previous_project, previous_selection)
+        return True
+
+    def redo(self) -> bool:
+        """Reaplica el paso deshecho. True si había paso."""
+        if not self._redo_stack:
+            return False
+        current = (deepcopy(self.project), self.selection)
+        next_project, next_selection = self._redo_stack.pop()
+        self._undo_stack.append(current)
+        self._apply_history(next_project, next_selection)
+        return True
+
+    def _apply_history(self, project: Project, selection) -> None:
+        """Cambia el documento a un snapshot SIN grabar otro undo step."""
+        self._undo_enabled = False
+        try:
+            self.project = project
+            self.selection = selection
+            self.invalidate_heatmap()
+            self.mark_dirty()
+        finally:
+            self._undo_enabled = True
 
     # ------------------------------------------------------------------
     # Persistencia (Fase 6): guardar / abrir / nuevo
@@ -326,6 +422,8 @@ class EditorSession:
         self.project_path = path
         self.measure_anchor = None
         self.measure_cursor = None
+        # Documento nuevo/cargado: el historial anterior ya no aplica.
+        self.clear_history()
         self.tool = Tool.SELECT
         self.selection = None
         self.wall_drag_start = None
@@ -417,6 +515,7 @@ class EditorSession:
             )
         return float(height)
 
+    @undoable
     def set_floor_dimensions(self, width_m: float, height_m: float) -> None:
         """Valida y aplica nuevas dimensiones del espacio (metros).
 
@@ -513,6 +612,7 @@ class EditorSession:
             return None
         return self.measure_anchor.distance_to(self.measure_cursor)
 
+    @undoable
     def apply_rf_settings(
         self,
         *,
@@ -588,6 +688,7 @@ class EditorSession:
         band_id = ap.band_id or default_band_id or self.band_id
         return self.project.get_band(band_id)
 
+    @undoable
     def set_ap_rf_config(
         self, ap_id: str, *, band_id: str, channel: int, width_mhz: int
     ) -> None:
@@ -924,6 +1025,7 @@ class EditorSession:
             requested_candidates,
         )
 
+    @undoable
     def apply_channel_assignment(self, assignment) -> list[str]:
         """Aplica una propuesta F13 canal a canal (paso «Aplicar»).
 
@@ -1229,6 +1331,7 @@ class EditorSession:
         ids += [obstacle.id for obstacle in self.floor.obstacles]
         return ids
 
+    @undoable
     def add_wall(self, start: Point2D, end: Point2D) -> Wall:
         """Crea una pared en metros. Validaciones de geometría mínima."""
         if start.distance_to(end) < 1e-6:
@@ -1245,6 +1348,7 @@ class EditorSession:
         self.mark_dirty()
         return wall
 
+    @undoable
     def add_access_point(self, position: Point2D) -> AccessPoint:
         """Crea un AP en metros con la radio por defecto del proyecto."""
         position = self._clamp_to_floor(position)
@@ -1256,6 +1360,7 @@ class EditorSession:
         self.mark_dirty()
         return ap
 
+    @undoable
     def add_client(self, position: Point2D) -> ClientDevice:
         """Crea un dispositivo cliente en metros."""
         position = self._clamp_to_floor(position)
@@ -1270,6 +1375,7 @@ class EditorSession:
     # Espacios (Fase 8): geometría + organización, sin RF (decisión BH)
     # ------------------------------------------------------------------
 
+    @undoable
     def add_space(self, corner_a: Point2D, corner_b: Point2D) -> Space:
         """Crea un espacio (rect alineado a ejes) entre dos esquinas.
 
@@ -1310,6 +1416,7 @@ class EditorSession:
         self.mark_dirty()
         return space
 
+    @undoable
     def set_space_properties(
         self, space_id: str, name: str, function: str = ""
     ) -> None:
@@ -1333,6 +1440,7 @@ class EditorSession:
     # Aperturas (Fase 8): huecos en paredes (decisión BG: reemplazo)
     # ------------------------------------------------------------------
 
+    @undoable
     def add_opening(
         self, wall_id: str, kind: str, center_offset_m: float | None = None
     ) -> Opening:
@@ -1380,6 +1488,7 @@ class EditorSession:
         self.mark_dirty()
         return opening
 
+    @undoable
     def set_opening_offsets(
         self, opening_id: str, start_offset_m: float, end_offset_m: float
     ) -> None:
@@ -1431,6 +1540,7 @@ class EditorSession:
                 return
         raise KeyError(f"Apertura no encontrada: {opening_id}")
 
+    @undoable
     def set_opening_kind(self, opening_id: str, kind: str) -> None:
         """Cambia el tipo visual (door/window/pass_through).
 
@@ -1453,6 +1563,7 @@ class EditorSession:
     # Mobiliario / obstáculos (Fase 9): SÍ afecta a la RF (decisión BL+)
     # ------------------------------------------------------------------
 
+    @undoable
     def add_obstacle(
         self, corner_a: Point2D, corner_b: Point2D, name: str = ""
     ) -> Obstacle:
@@ -1504,6 +1615,7 @@ class EditorSession:
         self.mark_dirty()
         return obstacle
 
+    @undoable
     def set_obstacle_properties(
         self,
         obstacle_id: str,
@@ -1552,6 +1664,7 @@ class EditorSession:
                 return
         raise KeyError(f"Objeto no encontrado: {obstacle_id}")
 
+    @undoable
     def move_obstacle(self, obstacle_id: str, min_corner: Point2D) -> None:
         """Mueve el footprint (esquina inferior izquierda) dentro del piso.
 
@@ -1592,6 +1705,7 @@ class EditorSession:
     # Mover / editar
     # ------------------------------------------------------------------
 
+    @undoable
     def move_ap(self, ap_id: str, position: Point2D) -> None:
         """Actualiza la posición del AP en METROS (nunca píxeles)."""
         position = self._clamp_to_floor(position)
@@ -1603,6 +1717,7 @@ class EditorSession:
                 return
         raise KeyError(f"Access Point no encontrado: {ap_id}")
 
+    @undoable
     def move_client(self, client_id: str, position: Point2D) -> None:
         """Actualiza la posición del cliente en METROS."""
         position = self._clamp_to_floor(position)
@@ -1613,6 +1728,7 @@ class EditorSession:
                 return
         raise KeyError(f"Cliente no encontrado: {client_id}")
 
+    @undoable
     def set_wall_material(self, wall_id: str, material_id: str) -> None:
         """Cambia el material de una pared (catálogo del Project)."""
         material: Material = self.project.get_material(material_id)
@@ -1624,6 +1740,7 @@ class EditorSession:
                 return
         raise KeyError(f"Pared no encontrada: {wall_id}")
 
+    @undoable
     def set_wall_thickness(self, wall_id: str, thickness_m: float) -> None:
         """Cambia el espesor de una pared. Debe ser > 0."""
         if thickness_m <= 0:
@@ -1651,6 +1768,7 @@ class EditorSession:
             raise ValueError("Coordenadas no finitas.")
         return x, y
 
+    @undoable
     def set_wall_endpoints(self, wall_id: str, start: Point2D, end: Point2D) -> None:
         """Mueve/redimensiona una pared cambiando sus dos extremos.
 
@@ -1695,6 +1813,7 @@ class EditorSession:
                 return
         raise KeyError(f"Pared no encontrada: {wall_id}")
 
+    @undoable
     def move_wall(self, wall_id: str, delta: Point2D) -> None:
         """Traslada una pared entera; los offsets de sus openings se mantienen.
 
@@ -1732,6 +1851,7 @@ class EditorSession:
             )
         return Rect(x=x1, y=y1, width=width, height=height)
 
+    @undoable
     def set_space_rect(self, space_id: str, rect: Rect) -> None:
         """Mueve/redimensiona un espacio (rect recortado al piso).
 
@@ -1753,6 +1873,7 @@ class EditorSession:
                 return
         raise KeyError(f"Espacio no encontrado: {space_id}")
 
+    @undoable
     def move_space(self, space_id: str, delta: Point2D) -> None:
         """Traslada un espacio manteniendo su tamaño (recorte al piso).
 
@@ -1788,6 +1909,7 @@ class EditorSession:
             ),
         )
 
+    @undoable
     def set_obstacle_rect(self, obstacle_id: str, rect: Rect) -> None:
         """Mueve/redimensiona el footprint de un obstáculo (recortado al piso).
 
@@ -1814,6 +1936,7 @@ class EditorSession:
     # Eliminar
     # ------------------------------------------------------------------
 
+    @undoable
     def delete_selection(self) -> bool:
         """Elimina el elemento seleccionado del modelo. True si había uno."""
         if self.selection is None:
