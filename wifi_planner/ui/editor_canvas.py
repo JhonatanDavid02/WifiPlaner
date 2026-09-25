@@ -62,6 +62,12 @@ class EditorCanvas(tk.Canvas):
         # Fase 9: arrastre de obstáculo (id + desfase del cursor al corner).
         self._drag_obstacle_id: str | None = None
         self._drag_obstacle_offset: Point2D = Point2D(0.0, 0.0)
+        # Fase 14-D: arrastre de pared (entera o por extremo) y de espacio.
+        self._drag_wall_id: str | None = None
+        self._drag_wall_offset: Point2D = Point2D(0.0, 0.0)
+        self._drag_wall_endpoint: tuple[str, str] | None = None
+        self._drag_space_id: str | None = None
+        self._drag_space_offset: Point2D = Point2D(0.0, 0.0)
         self._preview_end: Point2D | None = None
         # Imagen PIL del heatmap (se re-aplica tras cada render completo).
         self._heatmap_image = None
@@ -96,6 +102,9 @@ class EditorCanvas(tk.Canvas):
         self._drag_ap_id = None
         self._drag_client_id = None
         self._drag_obstacle_id = None
+        self._drag_wall_id = None
+        self._drag_wall_endpoint = None
+        self._drag_space_id = None
         self._preview_end = None
 
     def draw_heatmap(self, image) -> None:
@@ -477,6 +486,22 @@ class EditorCanvas(tk.Canvas):
     # Hit testing
     # ------------------------------------------------------------------
 
+    def _hit_wall_endpoint(self, world: Point2D, wall_id: str) -> str | None:
+        """'start'/'end' si el cursor está sobre un extremo de la pared."""
+        wall = self.session.find_wall(wall_id)
+        if wall is None:
+            return None
+        vp = self.viewport
+        wx, wy = vp.world_to_screen(world)
+        for name, endpoint in (
+            ("start", wall.segment.start),
+            ("end", wall.segment.end),
+        ):
+            ex, ey = vp.world_to_screen(endpoint)
+            if (ex - wx) ** 2 + (ey - wy) ** 2 <= self.SNAP_RADIUS_PX ** 2:
+                return name
+        return None
+
     def _hit_test(self, world: Point2D):
         """Devuelve (SelectionKind, id) del elemento bajo el cursor o None."""
         vp = self.viewport
@@ -601,6 +626,61 @@ class EditorCanvas(tk.Canvas):
             self.session.move_obstacle(self._drag_obstacle_id, target)
             self.clear_heatmap()
             self.render_project()
+        # Fase 14-D: edición de pared (extremo o traslación) y espacios.
+        elif self._drag_wall_endpoint is not None:
+            wall_id, which = self._drag_wall_endpoint
+            wall = self.session.find_wall(wall_id)
+            if wall is not None:
+                target = self._snap_world(world)
+                start, end = wall.segment.start, wall.segment.end
+                try:
+                    self.session.set_wall_endpoints(
+                        wall_id,
+                        target if which == "start" else start,
+                        start if which == "end" else end,
+                    )
+                except ValueError:
+                    # Protección de openings: frame inválido, se ignora.
+                    pass
+                self.clear_heatmap()
+                self.render_project()
+        elif self._drag_wall_id:
+            wall = self.session.find_wall(self._drag_wall_id)
+            if wall is not None:
+                new_start = Point2D(
+                    world.x - self._drag_wall_offset.x,
+                    world.y - self._drag_wall_offset.y,
+                )
+                delta = Point2D(
+                    new_start.x - wall.segment.start.x,
+                    new_start.y - wall.segment.start.y,
+                )
+                try:
+                    self.session.move_wall(self._drag_wall_id, delta)
+                except ValueError:
+                    pass
+                self.clear_heatmap()
+                self.render_project()
+        elif self._drag_space_id:
+            space = next(
+                (
+                    item
+                    for item in self.session.geometry_view.spaces
+                    if item.id == self._drag_space_id
+                ),
+                None,
+            )
+            if space is not None:
+                target_x = world.x - self._drag_space_offset.x
+                target_y = world.y - self._drag_space_offset.y
+                try:
+                    self.session.move_space(
+                        self._drag_space_id,
+                        Point2D(target_x - space.rect.x, target_y - space.rect.y),
+                    )
+                except ValueError:
+                    pass
+                self.render_project()
 
     def _on_press(self, event) -> None:
         world = self._snap_world(self._cursor_world(event))
@@ -624,6 +704,27 @@ class EditorCanvas(tk.Canvas):
                     self._drag_obstacle_id = entity_id
                     self._drag_obstacle_offset = Point2D(
                         world.x - obstacle.rect.x, world.y - obstacle.rect.y
+                    )
+            elif kind == SelectionKind.WALL:
+                # Fase 14-D: primero el extremo más cercano; si no, la
+                # pared entera se traslada arrastrando.
+                endpoint = self._hit_wall_endpoint(world, entity_id)
+                if endpoint is not None:
+                    self._drag_wall_endpoint = (entity_id, endpoint)
+                else:
+                    wall = self.session.selected_wall()
+                    if wall is not None:
+                        self._drag_wall_id = entity_id
+                        self._drag_wall_offset = Point2D(
+                            world.x - wall.segment.start.x,
+                            world.y - wall.segment.start.y,
+                        )
+            elif kind == SelectionKind.SPACE:
+                space = self.session.selected_space()
+                if space is not None:
+                    self._drag_space_id = entity_id
+                    self._drag_space_offset = Point2D(
+                        world.x - space.rect.x, world.y - space.rect.y
                     )
             self.on_model_changed()
             return
@@ -700,10 +801,20 @@ class EditorCanvas(tk.Canvas):
         pass
 
     def _on_release(self, _event) -> None:
-        if self._drag_ap_id or self._drag_client_id or self._drag_obstacle_id:
+        if (
+            self._drag_ap_id
+            or self._drag_client_id
+            or self._drag_obstacle_id
+            or self._drag_wall_id
+            or self._drag_wall_endpoint
+            or self._drag_space_id
+        ):
             self._drag_ap_id = None
             self._drag_client_id = None
             self._drag_obstacle_id = None
+            self._drag_wall_id = None
+            self._drag_wall_endpoint = None
+            self._drag_space_id = None
             self.on_model_changed()
 
     def _on_delete_key(self, _event) -> str:

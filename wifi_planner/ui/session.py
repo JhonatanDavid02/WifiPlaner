@@ -1556,6 +1556,176 @@ class EditorSession:
         raise KeyError(f"Pared no encontrada: {wall_id}")
 
     # ------------------------------------------------------------------
+    # Fase 14-D: edición de geometría (extremos, traslaciones, rects)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _finite_point(point: Point2D) -> tuple[float, float]:
+        x, y = float(point.x), float(point.y)
+        if not (math.isfinite(x) and math.isfinite(y)):
+            raise ValueError("Coordenadas no finitas.")
+        return x, y
+
+    def set_wall_endpoints(self, wall_id: str, start: Point2D, end: Point2D) -> None:
+        """Mueve/redimensiona una pared cambiando sus dos extremos.
+
+        Protección atómica de openings (Fase 14-D): si algún hueco de la
+        pared se quedaría fuera de la nueva longitud, se RECHAZA la
+        operación completa sin modificar nada (la geometría anterior
+        sigue siendo válida).
+
+        Raises:
+            KeyError: si la pared no existe.
+            ValueError: si los puntos no son finitos, coinciden o algún
+                opening no cabría en la longitud nueva.
+        """
+        wall = self.find_wall(wall_id)
+        if wall is None:
+            raise KeyError(f"Pared no encontrada: {wall_id}")
+        sx, sy = self._finite_point(start)
+        ex, ey = self._finite_point(end)
+        start_pt, end_pt = Point2D(sx, sy), Point2D(ex, ey)
+        new_length = start_pt.distance_to(end_pt)
+        if new_length < 1e-6:
+            raise ValueError("La pared necesita dos puntos distintos.")
+        overflowing = [
+            item.id
+            for item in self.openings_for_wall(wall_id)
+            if item.end_offset_m > new_length + 1e-9
+        ]
+        if overflowing:
+            raise ValueError(
+                f"La pared tiene {len(overflowing)} hueco(s) que no caben en "
+                f"la longitud nueva ({new_length:g} m): "
+                f"{', '.join(overflowing)}. "
+                "Acorta o elimina los huecos antes de encoger la pared."
+            )
+        for index, item in enumerate(self.floor.walls):
+            if item.id == wall_id:
+                self.floor.walls[index] = replace(
+                    item, segment=Segment2D(start_pt, end_pt)
+                )
+                self.invalidate_heatmap()
+                self.mark_dirty()
+                return
+        raise KeyError(f"Pared no encontrada: {wall_id}")
+
+    def move_wall(self, wall_id: str, delta: Point2D) -> None:
+        """Traslada una pared entera; los offsets de sus openings se mantienen.
+
+        Raises:
+            KeyError: si la pared no existe.
+            ValueError: si el delta no es finito (o deja la pared degenerada).
+        """
+        wall = self.find_wall(wall_id)
+        if wall is None:
+            raise KeyError(f"Pared no encontrada: {wall_id}")
+        dx, dy = self._finite_point(delta)
+        self.set_wall_endpoints(
+            wall_id,
+            Point2D(wall.segment.start.x + dx, wall.segment.start.y + dy),
+            Point2D(wall.segment.end.x + dx, wall.segment.end.y + dy),
+        )
+
+    @staticmethod
+    def _finite_rect(rect: Rect) -> None:
+        values = (rect.x, rect.y, rect.width, rect.height)
+        if not all(math.isfinite(value) for value in values):
+            raise ValueError("Rect con valores no finitos.")
+
+    def _clamped_rect(self, rect: Rect, min_size_m: float, what: str) -> Rect:
+        """Recorta ``rect`` al piso y exige el tamaño mínimo por lado."""
+        x1 = min(max(rect.x, 0.0), self.floor_width_m)
+        y1 = min(max(rect.y, 0.0), self.floor_height_m)
+        x2 = min(max(rect.x + rect.width, 0.0), self.floor_width_m)
+        y2 = min(max(rect.y + rect.height, 0.0), self.floor_height_m)
+        width, height = x2 - x1, y2 - y1
+        if width < min_size_m or height < min_size_m:
+            raise ValueError(
+                f"El {what} debe medir ≥ {min_size_m:g} m por lado "
+                f"(recortado al piso: {width:g} × {height:g} m)."
+            )
+        return Rect(x=x1, y=y1, width=width, height=height)
+
+    def set_space_rect(self, space_id: str, rect: Rect) -> None:
+        """Mueve/redimensiona un espacio (rect recortado al piso).
+
+        Los espacios no participan en la propagación (decisión BH): no se
+        invalida el heatmap, solo se marca ``dirty``.
+
+        Raises:
+            KeyError: si el espacio no existe.
+            ValueError: si el rect no es finito o queda demasiado pequeño.
+        """
+        self._finite_rect(rect)
+        for index, space in enumerate(self.floor.spaces):
+            if space.id == space_id:
+                clamped = self._clamped_rect(
+                    rect, MIN_SPACE_SIZE_M, "espacio"
+                )
+                self.floor.spaces[index] = replace(space, rect=clamped)
+                self.mark_dirty()
+                return
+        raise KeyError(f"Espacio no encontrado: {space_id}")
+
+    def move_space(self, space_id: str, delta: Point2D) -> None:
+        """Traslada un espacio manteniendo su tamaño (recorte al piso).
+
+        Raises:
+            KeyError: si el espacio no existe.
+            ValueError: si el delta no es finito o el rect choca con el piso.
+        """
+        space = None
+        for item in self.floor.spaces:
+            if item.id == space_id:
+                space = item
+                break
+        if space is None:
+            raise KeyError(f"Espacio no encontrado: {space_id}")
+        dx, dy = self._finite_point(delta)
+        # Mantiene el tamaño: la esquina se recorta para que el rect
+        # completo quepa en el piso (mismo criterio que move_obstacle).
+        x = min(
+            max(space.rect.x + dx, 0.0),
+            max(self.floor_width_m - space.rect.width, 0.0),
+        )
+        y = min(
+            max(space.rect.y + dy, 0.0),
+            max(self.floor_height_m - space.rect.height, 0.0),
+        )
+        self.set_space_rect(
+            space_id,
+            Rect(
+                x=x,
+                y=y,
+                width=space.rect.width,
+                height=space.rect.height,
+            ),
+        )
+
+    def set_obstacle_rect(self, obstacle_id: str, rect: Rect) -> None:
+        """Mueve/redimensiona el footprint de un obstáculo (recortado al piso).
+
+        La geometría del obstáculo sí atenúa la propagación (Fase 9): se
+        invalida el heatmap y se marca ``dirty``.
+
+        Raises:
+            KeyError: si el obstáculo no existe.
+            ValueError: si el rect no es finito o queda demasiado pequeño.
+        """
+        self._finite_rect(rect)
+        for index, obstacle in enumerate(self.floor.obstacles):
+            if obstacle.id == obstacle_id:
+                clamped = self._clamped_rect(
+                    rect, MIN_OBSTACLE_SIZE_M, "objeto"
+                )
+                self.floor.obstacles[index] = replace(obstacle, rect=clamped)
+                self.invalidate_heatmap()
+                self.mark_dirty()
+                return
+        raise KeyError(f"Objeto no encontrado: {obstacle_id}")
+
+    # ------------------------------------------------------------------
     # Eliminar
     # ------------------------------------------------------------------
 
