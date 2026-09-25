@@ -9,7 +9,11 @@ from core.material import MaterialAttenuationError
 from persistence import ProjectFormatError
 from ui import theme
 from ui.coverage_renderer import build_heatmap_image
-from ui.dialogs import RFSettingsDialog, ProjectDimensionsDialog
+from ui.dialogs import (
+    ChannelOptimizationDialog,
+    ProjectDimensionsDialog,
+    RFSettingsDialog,
+)
 from ui.editor_canvas import EditorCanvas
 from ui.panels import PropertiesPanel, Toolbar
 from ui.panels.toolbar import BAND_LABEL_BY_ID
@@ -227,6 +231,7 @@ class WifiPlannerApp(tk.Tk):
             on_heatmap_ap=self._on_heatmap_ap,
             on_heatmap_metric=self._on_heatmap_metric,
             on_rf_settings=self._on_rf_settings,
+            on_optimize=self._on_optimize_channels,
         )
         self.toolbar.pack(fill="x", padx=6, pady=(6, 2))
         self._refresh_ap_selector()
@@ -403,6 +408,42 @@ class WifiPlannerApp(tk.Tk):
             channel_width_mhz=radio.channel_width_mhz,
             sinr_target_db=thresholds.sinr_target_db,
             on_apply=apply,
+        )
+
+    def _on_optimize_channels(self) -> None:
+        """Propuesta de canales de la banda activa (Fase 13).
+
+        La optimización NO modifica el proyecto: solo calcula la
+        propuesta y la presenta en su diálogo (decisión CM). Cualquier
+        error controlado (banda/candidatos inválidos, sin datos de
+        materiales) se muestra aquí; nada queda a medias.
+        """
+        try:
+            result = self.session.optimize_channels()
+        except MaterialAttenuationError:
+            messagebox.showinfo(
+                "Optimización de canales",
+                "No hay datos de atenuación de materiales para esta banda "
+                "(no se inventan valores ni hay fallback).",
+                parent=self,
+            )
+            return
+        except (ValueError, KeyError) as exc:
+            messagebox.showerror("Optimización de canales", str(exc), parent=self)
+            return
+
+        def apply(result_) -> None:
+            applied = self.session.apply_channel_assignment(
+                result_.optimized_assignment
+            )
+            if not applied:
+                return
+            self.properties.refresh()
+            self._update_title()
+            self._schedule_heatmap()
+
+        ChannelOptimizationDialog(
+            self, result=result, on_apply=apply
         )
 
     def _refresh_ap_selector(self) -> None:

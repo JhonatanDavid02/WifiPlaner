@@ -35,6 +35,8 @@ from core.wall import (
 )
 from engine.classifier import rf_diagnostic, sinr_diagnostic
 from engine.combine import combine_results
+from engine import channel_optimization
+from engine.channel_optimization import OptimizationTarget
 from engine.coverage_grid import CoverageGrid
 from engine.interference import (
     annotate_interference,
@@ -667,6 +669,122 @@ class EditorSession:
                 f"({stats['points_meeting_sinr_target']})"
             ),
         ]
+
+    # ------------------------------------------------------------------
+    # Optimización de canales (Fase 13: propuesta + aplicación)
+    # ------------------------------------------------------------------
+
+    def optimize_channels(
+        self,
+        band_id: str | None = None,
+        requested_candidates=None,
+    ):
+        """Propuesta de reasignación de canales de la banda (F13, CM).
+
+        Simula los APs de la banda UNA vez (el canal no altera RSSI/SNR,
+        decisión BR) y evalúa asignaciones con el pipeline existente
+        F4 → F11 → F12 → F5. Es una PROPUESTA: NO muta el proyecto
+        (sin dirty y sin invalidar la corrida visible); los canales solo
+        cambian vía ``apply_channel_assignment``.
+
+        Solo los APs CON CANAL son optimizables (objetivos); los demás
+        APs de la banda entran en la evaluación sin emisión (decisión
+        CB), de modo que el score refleja el heatmap combinado real.
+
+        Args:
+            band_id: Banda a optimizar (por defecto la activa).
+            requested_candidates: Candidatos opcionales por ``ap_id``
+                (se filtran contra el validador único F10).
+
+        Returns:
+            ``OptimizationResult`` de ``engine.channel_optimization``.
+
+        Raises:
+            KeyError: si la banda no existe.
+            ValueError: si candidatos u objetivos son inválidos.
+        """
+        band_id = band_id or self.band_id
+        self.project.get_band(band_id)  # valida existencia
+
+        band_aps: list[AccessPoint] = []
+        for ap in self.project.access_points:
+            try:
+                band = self.resolve_band_for_ap(ap, band_id)
+            except KeyError:
+                continue  # banda del AP irreferenciable: fuera (patrón F11)
+            if band.id == band_id:
+                band_aps.append(ap)
+
+        if not band_aps:
+            return channel_optimization.optimize_channels(
+                [], {}, self.project.thresholds, requested_candidates
+            )
+
+        points = self.build_coverage_grid().points()
+        base_results: dict = {}
+        for ap in band_aps:
+            base_results[ap.id] = simulate_coverage(
+                project=self.project,
+                access_point=ap,
+                frequency_band=self.resolve_band_for_ap(ap, band_id),
+                sample_points=points,
+                walls=self.floor.walls,
+                openings=self.floor.openings,
+                obstacles=self.floor.obstacles,
+            )
+        targets = [
+            OptimizationTarget(
+                ap_id=ap.id,
+                band=self.resolve_band_for_ap(ap, band_id),
+                width_mhz=ap.radio.channel_width_mhz,
+                current_channel=ap.channel,
+            )
+            for ap in band_aps
+            if ap.channel is not None
+        ]
+        return channel_optimization.optimize_channels(
+            targets,
+            base_results,
+            self.project.thresholds,
+            requested_candidates,
+        )
+
+    def apply_channel_assignment(self, assignment) -> list[str]:
+        """Aplica una propuesta F13 canal a canal (paso «Aplicar»).
+
+        Reutiliza ``set_ap_rf_config`` (F10): cada triple (banda, canal,
+        ancho) se valida ANTES de tocar el proyecto; solo los APs que
+        realmente cambian se reemplazan (dirty + invalidación de
+        heatmap, patrón BU). Aplicar es siempre explícito: la sesión
+        jamás cambia canales por sí sola.
+
+        Args:
+            assignment: ``{ap_id: canal}`` (la propuesta optimizada).
+
+        Returns:
+            Lista ordenada de ids a los que se les cambió el canal.
+
+        Raises:
+            KeyError: si un id no existe en el proyecto.
+            ValueError: si un canal no es válido para la banda del AP.
+        """
+        applied: list[str] = []
+        for ap_id, channel in sorted(assignment.items()):
+            ap = next(
+                (a for a in self.project.access_points if a.id == ap_id), None
+            )
+            if ap is None:
+                raise KeyError(f"Access Point no encontrado: {ap_id}")
+            if channel is None or ap.channel == channel:
+                continue  # sin cambio real (patrón BU)
+            self.set_ap_rf_config(
+                ap_id,
+                band_id=ap.band_id or self.band_id,
+                channel=channel,
+                width_mhz=ap.radio.channel_width_mhz,
+            )
+            applied.append(ap_id)
+        return applied
 
     def run_heatmap(self, band_id: str | None = None) -> SimulationResult:
         """Simula el CoverageGrid con las paredes reales.

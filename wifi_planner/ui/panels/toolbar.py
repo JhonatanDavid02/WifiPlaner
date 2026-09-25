@@ -42,6 +42,7 @@ class Toolbar(ttk.Frame):
         on_heatmap_ap: Callable[[str], None] | None = None,
         on_heatmap_metric: Callable[[str], None] | None = None,
         on_rf_settings: Callable[[], None] | None = None,
+        on_optimize: Callable[[], None] | None = None,
         **kwargs,
     ) -> None:
         super().__init__(master, **kwargs)
@@ -55,6 +56,7 @@ class Toolbar(ttk.Frame):
         self._on_heatmap_ap = on_heatmap_ap or (lambda _a: None)
         self._on_heatmap_metric = on_heatmap_metric or (lambda _m: None)
         self._on_rf_settings = on_rf_settings or (lambda: None)
+        self._on_optimize = on_optimize or (lambda: None)
         self._tool_var = tk.StringVar(value=Tool.SELECT.value)
         self._band_var = tk.StringVar(value="2.4 GHz")
         self._res_var = tk.StringVar(value="0.50")
@@ -152,10 +154,14 @@ class Toolbar(ttk.Frame):
         ttk.Button(self, text="Config RF…", command=self._on_rf_settings).grid(
             row=0, column=19, padx=4, pady=4
         )
-        ttk.Button(self, text="Simular", command=self._on_simulate).grid(
+        # Fase 13: propuesta de canales (no aplica nada por sí sola).
+        ttk.Button(self, text="Opt. canal…", command=self._on_optimize).grid(
             row=0, column=20, padx=4, pady=4
         )
-        self.columnconfigure(21, weight=1)
+        ttk.Button(self, text="Simular", command=self._on_simulate).grid(
+            row=0, column=21, padx=4, pady=4
+        )
+        self.columnconfigure(22, weight=1)
 
     def set_ap_choices(self, choices: list[str], current: str | None = None) -> None:
         """Actualiza el selector de AP.

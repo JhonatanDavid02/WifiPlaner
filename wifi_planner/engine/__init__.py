@@ -53,6 +53,17 @@ from engine.sinr import (
 from engine.coverage_grid import CoverageGrid, MAX_GRID_POINTS, MIN_RESOLUTION_M
 from engine.simulator import simulate_coverage
 from engine.combine import combine_results
+from engine.channel_optimization import (
+    EXHAUSTIVE_LIMIT,
+    SEARCH_COORDINATE_DESCENT,
+    SEARCH_EXHAUSTIVE,
+    AssignmentEvaluation,
+    OptimizationResult,
+    OptimizationTarget,
+    candidate_channels,
+    evaluate_channel_assignment,
+    optimize_channels,
+)
 from engine.interference import (
     SpectralEmission,
     SpectralOverlap,
@@ -105,6 +116,15 @@ __all__ = [
     "MIN_RESOLUTION_M",
     "simulate_coverage",
     "combine_results",
+    "EXHAUSTIVE_LIMIT",
+    "SEARCH_COORDINATE_DESCENT",
+    "SEARCH_EXHAUSTIVE",
+    "AssignmentEvaluation",
+    "OptimizationResult",
+    "OptimizationTarget",
+    "candidate_channels",
+    "evaluate_channel_assignment",
+    "optimize_channels",
     "SpectralEmission",
     "SpectralOverlap",
     "InterferenceSummary",

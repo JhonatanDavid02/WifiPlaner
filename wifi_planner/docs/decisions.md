@@ -1276,6 +1276,123 @@ escala + leyenda + rama de pintado), `ui/panels/toolbar.py` (etiqueta),
   es preferible a borrarlos, y limitarlo a dos preserva el resto del
   contrato histórico byte a byte.
 
+## Fase 13 — Optimización de canales
+
+### Decisión CJ — Coste explícito = `sinr_avg_db` del heatmap combinado (con `sinr_min_db` como primer desempate)
+
+- **Decisión:** el coste de una asignación es **una sola cantidad
+  física ya modelada**: el `sinr_avg_db` de los stats combinados del
+  heatmap (MAX RSSI, §14) a **maximizar**; `sinr_min_db` entra como
+  primer nivel de desempate (junto con nº de cambios y orden
+  lexicográfico, decisión CL). `evaluate_channel_assignment` lo
+  calcula reutilizando la secuencia canónica F4 → F11 → F12 → F5
+  (`annotate_interference` → `annotate_sinr` → `combine_results`)
+  sobre los resultados base simulados **una vez** por corrida.
+- **Razón:** pesos o índices compuestos inventados serían números sin
+  física detrás (el spec prohíbe métricas ad-hoc); el SINR medio es
+  exactamente lo que el usuario ve en la métrica `sinr` del heatmap.
+  Como el canal no altera RSSI/SNR (BR), la única capa que cambia
+  entre candidatos es I/SINR, así que comparar `sinr_avg` es comparar
+  la interferencia agregada real, sin duplicar fórmulas (CF) ni tocar
+  `_better` (F5).
+
+### Decisión CK — Búsqueda: semilla = actual; exhaustive si ∏ candidatos ≤ 64, si no descenso coordinado acotado
+
+- **Decisión:** la semilla de la búsqueda es siempre la asignación
+  **actual** y solo se aceptan claves **estrictamente mejores**. Si
+  `∏ |candidatos| ≤ EXHAUSTIVE_LIMIT` (constante `= 64`) se evalúa
+  **todo** el producto (`SEARCH_EXHAUSTIVE`, óptimo global); en caso
+  contrario, descenso coordinado (`SEARCH_COORDINATE_DESCENT`) con
+  pases acotados a **uno por AP objetivo**, evaluando solo los canales
+  de cada AP; al terminar sin mejora estricta la solución es un
+  óptimo local y `changed=False` si la semilla ya era la mejor. Un AP
+  con lista de candidatos vacía queda **fijo** en su canal actual
+  dentro del producto (no anula las combinaciones de los demás).
+- **Razón:** el coste medido es ≈ 35 ms/evaluación (grid 12×8 m @
+  0.5 m, 3 APs, dominado por `annotate_interference`), así que 64
+  evaluaciones ≈ 2 s y el descenso acotado mantiene la corrida
+  interactiva también con 10+ APs (14^N crece explosivamente; exhaustive
+  con N ≥ 3 es inviable). Las claves estrictas + semilla actual dan
+  determinismo total (misma propuesta y mismo `evaluation_count` en
+  cada corrida) y hacen que «ya está óptimo» se exprese como
+  `changed=False`, no como un empate arbitrario.
+
+### Decisión CL — Orden total: `sinr_avg` → `sinr_min` → nº de cambios → orden `(ap_id, canal)`; `None` ⇒ `+inf`
+
+- **Decisión:** las asignaciones se comparan con la clave
+  lexicográfica `(-sinr_avg, -sinr_min, cambios_vs_actual,
+  orden_de_pares)` donde los pares se ordenan por `(ap_id, canal)`
+  con `None ⇒ -1` (los APs con canal son los objetivos, CM). Un score
+  `None` se traduce en `+inf` para maximizar: **jamás** `None → 0`
+  (que parecería el mejor score posible). El empate total conserva la
+  asignación actual (0 cambios).
+- **Razón:** sin un orden total los empates dependrían del orden de
+  entrada o del producto de `itertools` (no determinista respecto a la
+  semántica). Priorizar el nº de cambios hace que entre dos
+  asignaciones con el mismo coste se prefiera la que menos molesta al
+  usuario; el orden lexicográfico final es estable y reproducible.
+  `sinr_min` desempata antes que los cambios porque es física, no
+  presentación.
+
+### Decisión CM — Alcance: una banda por corrida; objetivos = APs con canal; propuesta **sin auto-aplicar**
+
+- **Decisión:** cada corrida optimiza **una sola banda** (la activa o
+  la pedida). Solo los APs **con canal configurado** son objetivos; el
+  resto de APs de la banda entran en la evaluación **sin emisión**
+  (`channel=None` ⇒ fuera del modelo espectral, herencia de CB). La
+  sesión (`EditorSession.optimize_channels`) simula la banda una vez y
+  devuelve un `OptimizationResult`: **no muta** el proyecto (sin dirty,
+  sin invalidar corridas). Los canales solo cambian cuando el usuario
+  confirma «Aplicar propuesta» en el diálogo
+  (`ChannelOptimizationDialog.on_apply` →
+  `EditorSession.apply_channel_assignment` → `set_ap_rf_config` por
+  AP, con su validación F10 y dirty/invalidación solo con cambio
+  real).
+- **Razón:** el spec exige propuesta + paso «Aplicar» separados (sin
+  auto-aplicar); mutar en «calcular» rompería I8/L y haría imposible
+  descartar una propuesta. Una banda por corrida mantiene el modelo
+  espectral honesto (jamás hay interferencia entre bandas, CB) y la
+  separación objetivo/evaluación respeta que un AP sin canal no
+  emite pero sí ocupa el heatmap combinado.
+
+### Decisión CN — Candidatos: catálogo completo del validador único; los pedidos se filtran con `validate_channel_config`
+
+- **Decisión:** por defecto los candidatos de cada AP son **todo el
+  catálogo válido** de su banda y ancho (`candidate_channels` →
+  `channel_numbers_for_frequency`, fuente única F10). Un mapa de
+  candidatos pedido explícitamente se **filtra** con
+  `validate_channel_config` (se ordena, se deduplica, se descarta lo
+  inválido); un `ap_id` desconocido ⇒ `ValueError`; si el pedido de un
+  AP queda vacío, para ese AP se usan sus candidatos por defecto. El
+  ancho de canal se valida igual que en F7/F10 (`allowed widths`).
+- **Razón:** una segunda tabla de canales o de frecuencias violaría
+  la fuente única de F10 (BQ/BR) y abriría la puerta a canales
+  inventados; filtrar con el **mismo** validador del triple garantiza
+  que toda propuesta es aplicable tal cual vía `set_ap_rf_config`
+  (sin sorpresas en el paso «Aplicar»).
+
+### Decisión CO — Supersede: `audit_f13.py` sustituye a `audit_f12.py`; la frontera BW/CD cede solo en «optimización de canales»
+
+- **Decisión:** `audit_f13.py` hereda **todo** el chequeo de
+  `audit_f12.py` (capas, fórmula única, orden de anotación, enum F7,
+  métricas, persistencia, vocabulario) y añade el núcleo F13 (coste
+  CJ, límite 64, candidatos CN, secuencia reutilizada, sesión no
+  mutante, UI de propuesta, diálogo con apply deshabilitado si
+  `changed=False`); `audit_f12.py` queda **superseded** con el mismo
+  precedente CI (audit_f10 → audit_f11 → audit_f12 → audit_f13), y
+  `UI_ALLOWED_ENGINE` gana `channel_optimization`. Las fronteras BW
+  (F10: «sin interferencia/SINR/optimización») y CD (F11: «sin
+  optimización») quedan levantadas **solo** en lo que dice
+  «optimización de canales»: CCA/CSMA, hidden node, DFS, balanceo de
+  carga, roaming, band steering y ML **siguen** fuera de alcance y
+  verificados por el vocabulario prohibido.
+- **Razón:** el spec de F13 exige un gate arquitectónico propio y
+  supersede explícito; llevar la auditoría entera dentro (en vez de
+  importar o duplicar parcialmente) evita que una fase futura rompa
+  F12 sin que el gate lo note. Levantar la frontera de forma
+  quirúrgica respeta el principio de que cada fase solo abre lo que su
+  spec autoriza.
+
 ---
 
 ## Discrepancias encontradas (no resueltas silenciosamente)

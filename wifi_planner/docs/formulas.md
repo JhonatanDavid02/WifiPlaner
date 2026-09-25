@@ -678,3 +678,100 @@ APs. `{}` si no hay evaluaciones ni SINR anotado ⇒ la UI distingue
   ni decide ganadores; el heatmap de SINR es presentación (escala
   0–45 dB con la misma dirección que SNR —mayor=mejor—, no la escala
   invertida de interferencia).
+
+## 15. Optimización de canales (Fase 13): coste, búsqueda y desempate
+
+F13 **no añade física**: es una capa determinista que evalúa
+asignaciones de canales con el pipeline ya existente
+(`annotate_interference` → `annotate_sinr` → `combine_results`,
+§13–§14) y elige la mejor según un coste explícito.
+
+### Coste (decisión CJ)
+
+```
+score(A) = sinr_avg_db del heatmap combinado (MAX RSSI) con A   [maximizar]
+```
+
+- Una **sola cantidad física** ya modelada (media del SINR del
+  ganador por RSSI sobre todos los puntos del grid). Sin pesos ni
+  índices compuestos inventados.
+- El canal **no** altera RSSI/SNR (decisión BR): solo cambia la capa
+  de I/SINR, por lo que `score` es exactamente la métrica que el
+  usuario ve en el heatmap de SINR (§14).
+
+### Orden total de asignaciones (desempate, decisión CL)
+
+Mejor = menor clave lexicográfica:
+
+```
+key(A) = ( −sinr_avg(A),  −sinr_min(A),  cambios_vs_actual(A),
+           orden( (ap_id, canal) con None ⇒ −1 ) )
+```
+
+1. Mayor `sinr_avg` (el coste).
+2. Empate ⇒ mayor `sinr_min` (mejor peor punto).
+3. Empate ⇒ **menos cambios** frente a la asignación actual.
+4. Empate final ⇒ orden lexicográfico estable `(ap_id, canal)`.
+5. `score`/`sinr_min` = `None` ⇒ `+inf` (jamás `None → 0`).
+
+La semilla es siempre la **asignación actual** y solo se aceptan
+claves estrictamente mejores ⇒ una configuración ya óptima devuelve
+`changed=False` y el empate total conserva la actual (0 cambios).
+
+### Búsqueda (decisión CK)
+
+```
+semilla = asignación actual
+espacio = ∏ |candidatos(ap)|          (APs con canal)
+si espacio ≤ EXHAUSTIVE_LIMIT (= 64):  exhaustive  — evalúa TODO el producto
+si no:                                 coordinate_descent — pases por AP
+                                       (máx. uno por AP objetivo), solo
+                                       mejoras estrictas ⇒ óptimo local
+```
+
+- `EXHAUSTIVE_LIMIT = 64` es una constante explícita y honesta: el
+  coste real medido es ≈ 35 ms/evaluación (grid 12×8 m @0.5 m, 3 APs),
+  dominado por `annotate_interference`, por debajo de ~500 evaluaciones
+  el usuario ni nota la corrida.
+- Un AP **sin candidatos alternativos** queda fijo en su canal actual
+  dentro del producto (su semilla ya se evaluó aparte): no anula las
+  combinaciones de los demás.
+- Determinismo total: mismo proyecto ⇒ misma propuesta, mismo
+  `evaluation_count` (los empates los resuelve CL, no el orden de
+  entrada).
+
+### Candidatos (decisión CN)
+
+- Por defecto: **catálogo completo** de la banda a 20/40/… MHz
+  (`channel_numbers_for_frequency`, fuente única F10) con el ancho
+  validado por `validate_channel_config`.
+- Candidatos pedidos: se **filtran** con ese mismo validador (orden y
+  deduplicación); un `ap_id` desconocido ⇒ `ValueError`; un AP cuyo
+  pedido queda vacío ⇒ candidatos = catálogo por defecto para él.
+- Ninguna tabla de frecuencia fuera de `core/channel.py`.
+
+### Alcance de una corrida (decisión CM) y APs sin canal (CB)
+
+- **Una banda por corrida**: los objetivos son los APs **con canal** de
+  la banda elegida; el resto de APs de esa banda entran en la
+  evaluación **sin emisión** (`channel=None` ⇒ fuera del modelo
+  espectral), de modo que el score refleja el heatmap combinado real.
+- La sesión simula la banda **una vez** y reutiliza esos resultados
+  base para cada candidato (el canal no toca RSSI/SNR, BR).
+- **Propuesta, nunca aplicación automática**: `optimize_channels` no
+  muta nada; los canales solo cambian al confirmar «Aplicar propuesta»
+  (`apply_channel_assignment`, que reutiliza la validación del triple
+  de F10).
+
+### Límites (honestidad del modelo)
+
+- Optimiza **coexistencia espectral** (menos solapamiento ⇒ mayor
+  SINR); no modela CCA/CSMA, hidden node, DFS, balanceo de carga,
+  roaming, band steering ni ML (fuera de alcance en F13, verificado
+  por `audit_f13.py`).
+- `coordinate_descent` garantiza un **óptimo local** respecto de CL
+  (mejoras estrictas), no el global; con espacios ≤ 64 el exhaustive
+  sí es global.
+- El coste prioriza la **media**: una propuesta que mejora `sinr_avg`
+  gana aunque empeore el peor punto; `sinr_min_db` solo desempata
+  entre asignaciones con idéntica media (CL, paso 2).
