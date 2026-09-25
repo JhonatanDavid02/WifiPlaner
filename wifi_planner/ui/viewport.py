@@ -27,7 +27,10 @@ class Viewport:
 
     Attributes:
         world_width_m: Ancho del espacio físico en metros (> 0).
+            **Obligatorio**: el viewport no inventa un tamaño por
+            defecto (Fase 14-B/14.1, «sin 12×8 implícito»).
         world_height_m: Alto del espacio físico en metros (> 0).
+            **Obligatorio** (mismo motivo que ``world_width_m``).
         canvas_width_px: Ancho actual del lienzo en píxeles.
         canvas_height_px: Alto actual del lienzo en píxeles.
         margin_px: Margen en píxeles alrededor del rectángulo del piso.
@@ -36,8 +39,8 @@ class Viewport:
         pan_y_px: Desplazamiento vertical de la vista en píxeles.
     """
 
-    world_width_m: float = 12.0
-    world_height_m: float = 8.0
+    world_width_m: float
+    world_height_m: float
     canvas_width_px: int = 800
     canvas_height_px: int = 600
     margin_px: int = 40

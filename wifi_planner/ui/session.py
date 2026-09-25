@@ -155,12 +155,21 @@ def undoable(method):
     no deja pasos huérfanos. Las llamadas anidadas (p. ej. ``move_wall``
     → ``set_wall_endpoints``) se anotan una sola vez, y durante
     undo/redo la grabación queda desactivada.
+
+    Fase 14.1: mientras hay un gesto abierto (``begin_edit``) la
+    operación se ejecuta pero **no** apila un snapshot; solo marca el
+    gesto como tocado. La transición única se registra en el
+    ``commit_edit`` que cierra el arrastre.
     """
 
     @wraps(method)
     def wrapper(self, *args, **kwargs):
         if not self._undo_enabled or self._undo_recording:
             return method(self, *args, **kwargs)
+        if self._gesture_active:
+            result = method(self, *args, **kwargs)
+            self._gesture_touched = True
+            return result
         previous = (deepcopy(self.project), self.selection)
         self._undo_recording = True
         try:
@@ -264,6 +273,11 @@ class EditorSession:
         self._redo_stack: list = []
         self._undo_enabled: bool = True
         self._undo_recording: bool = False
+        # Fase 14.1: gesto interactivo (arrastre) = UNA entrada de historial.
+        self._gesture_active: bool = False
+        self._gesture_snapshot = None
+        self._gesture_dirty: bool = False
+        self._gesture_touched: bool = False
         # Fase 5: HEATMAP_ALL_APS (combinado) o id de un AP concreto.
         self.heatmap_ap_id: str = HEATMAP_ALL_APS
         # Fase 7: métrica visual del heatmap (vista; no persistible).
@@ -312,13 +326,20 @@ class EditorSession:
         """Vacía deshacer/rehacer (al abrir o crear un documento)."""
         self._undo_stack.clear()
         self._redo_stack.clear()
+        self._reset_gesture()
 
     def undo(self) -> bool:
         """Restaura el estado anterior del documento. True si había paso.
 
         El estado actual se mueve a la pila de rehacer; el documento
         queda como ``dirty`` (ya no coincide con lo guardado en disco).
+
+        Fase 14.1: si hay un gesto abierto, ``Ctrl+Z`` lo **cancela**
+        (restaura el estado previo al arrastre) sin tocar las pilas.
         """
+        if self._gesture_active:
+            self.cancel_edit()
+            return True
         if not self._undo_stack:
             return False
         current = (deepcopy(self.project), self.selection)
@@ -329,6 +350,10 @@ class EditorSession:
 
     def redo(self) -> bool:
         """Reaplica el paso deshecho. True si había paso."""
+        if self._gesture_active:
+            # Un gesto a medias no puede coexistir con un redo: se aborta
+            # para no apilar un snapshot de un documento ya cambiado.
+            self.cancel_edit()
         if not self._redo_stack:
             return False
         current = (deepcopy(self.project), self.selection)
@@ -345,6 +370,85 @@ class EditorSession:
             self.selection = selection
             self.invalidate_heatmap()
             self.mark_dirty()
+        finally:
+            self._undo_enabled = True
+
+    # ------------------------------------------------------------------
+    # Fase 14.1: gestos interactivos (UNA entrada de historial por gesto)
+    # ------------------------------------------------------------------
+
+    def _reset_gesture(self) -> None:
+        """Descarta el gesto en curso sin tocar el documento."""
+        self._gesture_active = False
+        self._gesture_snapshot = None
+        self._gesture_dirty = False
+        self._gesture_touched = False
+
+    @property
+    def gesture_active(self) -> bool:
+        """True mientras hay un arrastre abierto (sin ``commit_edit``)."""
+        return self._gesture_active
+
+    def begin_edit(self) -> None:
+        """Congela el estado previo a un gesto interactivo (arrastre).
+
+        Mientras el gesto está abierto, las operaciones ``@undoable``
+        se ejecutan normalmente pero NO apilan snapshots intermedios.
+        El gesto se cierra con ``commit_edit`` (una sola entrada) o con
+        ``cancel_edit`` (restauración sin historial).
+
+        Un ``begin_edit`` anidado conserva la foto inicial: el primer
+        punto de partida es el que vale para todo el gesto.
+        """
+        if self._gesture_active:
+            return
+        self._gesture_snapshot = (deepcopy(self.project), self.selection)
+        self._gesture_dirty = self.dirty
+        self._gesture_touched = False
+        self._gesture_active = True
+
+    def commit_edit(self) -> bool:
+        """Cierra el gesto registrando exactamente UN paso de historial.
+
+        Returns:
+            True si se apiló un paso; False si no hubo cambio real
+            (gesto sin ediciones, o gesto que terminó donde empezó).
+
+        El límite de historial (``MAX_UNDO_STEPS``), la invalidación del
+        heatmap y el marcado ``dirty`` siguen siendo los de ``_push_undo``.
+        """
+        if not self._gesture_active:
+            return False
+        snapshot = self._gesture_snapshot
+        touched = self._gesture_touched
+        dirty_before = self._gesture_dirty
+        self._reset_gesture()
+        if snapshot is None or not touched:
+            return False
+        previous_project, _previous_selection = snapshot
+        if self.project == previous_project:
+            # El gesto volvió al punto de partida: nada que deshacer.
+            self.dirty = dirty_before
+            return False
+        self._push_undo(snapshot)
+        return True
+
+    def cancel_edit(self) -> None:
+        """Aborta el gesto restaurando el estado previo (sin historial)."""
+        if not self._gesture_active:
+            return
+        snapshot = self._gesture_snapshot
+        dirty_before = self._gesture_dirty
+        self._reset_gesture()
+        if snapshot is None:
+            return
+        project, selection = snapshot
+        self._undo_enabled = False
+        try:
+            self.project = project
+            self.selection = selection
+            self.invalidate_heatmap()
+            self.dirty = dirty_before
         finally:
             self._undo_enabled = True
 

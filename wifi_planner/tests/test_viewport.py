@@ -45,7 +45,8 @@ def test_round_trip_world_screen_world():
 
 
 def test_round_trip_screen_world_screen():
-    vp = Viewport(canvas_width_px=800, canvas_height_px=600)
+    vp = Viewport(world_width_m=12.0, world_height_m=8.0,
+                  canvas_width_px=800, canvas_height_px=600)
     x_px, y_px = 123.456, 234.567
     world = vp.screen_to_world(x_px, y_px)
     sx, sy = vp.world_to_screen(world)
@@ -73,7 +74,7 @@ def test_set_world_size_updates_scale():
 
 
 def test_set_world_size_rejects_invalid():
-    vp = Viewport()
+    vp = Viewport(world_width_m=12.0, world_height_m=8.0)
     with pytest.raises(ValueError):
         vp.set_world_size(0, 8)
     with pytest.raises(ValueError):
@@ -88,7 +89,7 @@ def test_constructor_rejects_invalid_world():
 
 
 def test_set_canvas_size_rejects_invalid():
-    vp = Viewport()
+    vp = Viewport(world_width_m=12.0, world_height_m=8.0)
     with pytest.raises(ValueError):
         vp.set_canvas_size(0, 600)
     with pytest.raises(ValueError):
@@ -156,9 +157,15 @@ def test_zoom_at_rejects_invalid_factor():
 
 def test_constructor_rejects_invalid_zoom():
     with pytest.raises(ValueError):
-        Viewport(zoom=0.0)
+        Viewport(world_width_m=12.0, world_height_m=8.0, zoom=0.0)
     with pytest.raises(ValueError):
-        Viewport(zoom=float("nan"))
+        Viewport(world_width_m=12.0, world_height_m=8.0, zoom=float("nan"))
+
+
+def test_world_dimensions_are_required():
+    # Fase 14/14.1: no existe un tamaño de plano implícito (sin 12×8).
+    with pytest.raises(TypeError):
+        Viewport()
 
 
 def test_pan_by_shifts_origins():

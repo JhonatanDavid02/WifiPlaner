@@ -6,7 +6,24 @@ Wi-Fi Planner es un sistema de diseño y simulación visual de redes Wi-Fi.
 La V1 establece la **fundación**: dominio, geometría en metros, motor RF
 centralizado, configuración centralizada, pruebas y documentación.
 
-**Fase 8 (actual):** geometría arquitectónica — `Space` (zonas) y
+**Fase 14 + 14.1 (actual):** editor 2D **building-agnostic**. El
+escenario lo define el usuario y la única fuente de verdad sigue siendo
+`Project + Floor + geometry` (walls, openings, obstacles, spaces +
+`access_points`/`clients`): **no existe ni existe un modelo `Scenario`/
+`Building` duplicado**, y el motor F10→F13 procesa la geometría del
+piso activo sin ninguna rama por edificio (prueba A/B/C en
+`tests/test_scenario_ab.py`). F14 añade: `ui/geometry_view.py`
+(instantánea del piso activo, 14-C), edición interactiva de extremos,
+traslaciones y footprints (14-D), zoom/pan/rejilla/snap (14-E),
+medición en metros (14-F), deshacer/rehacer por snapshots (14-G),
+persistencia de la geometría editada sin crecer el schema (14-H) y
+verificación del pipeline RF sobre geometría editada (14-I).
+**Fase 14.1:** un arrastre completo (press → motion × N → release) es
+**UNA sola entrada de historial** (`begin_edit`/`commit_edit`/
+`cancel_edit` en `ui/session.py`), y `Viewport` exige sus dimensiones
+de mundo (sin 12×8 implícito).
+
+**Fase 8:** geometría arquitectónica — `Space` (zonas) y
 `Opening` (puertas/ventanas/pass-through) sobre paredes. Los openings
 son **muro-relativos** (offsets métricos sobre `wall.segment.start`) y
 su cruce en el rayo **sustituye** la atenuación de la pared por el
@@ -33,7 +50,7 @@ no es una simulación electromagnética completa.
 
 ```
 ┌─────────────────────────────────────────────┐
-│  UI (Fase 3–10)                             │
+│  UI (Fase 3–14.1)                           │
 │  editor 2D (Tkinter), heatmap (Pillow),     │
 │  viewport (metros→píxeles), paneles,        │
 │  menú Archivo (Nuevo/Abrir/Guardar)         │
@@ -41,7 +58,7 @@ no es una simulación electromagnética completa.
 │  NUNCA serializa el proyecto por su cuenta  │
 │  NUNCA contiene fórmulas de RF              │
 ├─────────────────────────────────────────────┤
-│  persistence/  (Fase 6, 6.1, 7, 8)          │
+│  persistence/  (Fase 6–14, schema v1)       │
 │  Project ↔ JSON (schema_version), validación│
 │  de entrada no confiable, escritura atómica │
 │  Importa core/ (+ engine solo para validar  │
@@ -111,23 +128,24 @@ devuelven resultados. **La UI solo consume estos resultados.**
 | `sinr.py` | **Fase 12 (nuevo):** fórmula única del SINR — `signal_to_interference_noise_ratio` (forma estable con el máximo, CF), `interference_plus_noise_dbm` (None ⇒ ruido exacto, CG), `_with_sinr`, `annotate_sinr` (reemplaza resultados **después** de F11 y **antes** de combinar), `sinr_stats_block` (6 claves, única definición). Sin caché/hilos, sin decisión de ganadores |
 | `channel_optimization.py` | **Fase 13 (nuevo):** propuesta de canales — `OptimizationTarget`/`AssignmentEvaluation`/`OptimizationResult`, `candidate_channels` (catálogo F10 completo; pedidos se filtran con `validate_channel_config`, CN), `evaluate_channel_assignment` (reutiliza F4→F11→F12→F5 sin mutar, CJ), `_optimization_key` (coste `sinr_avg` → `sinr_min` → nº de cambios → orden (ap_id, canal), None ⇒ +inf, CL) y `optimize_channels` (semilla = actual; exhaustivo si ∏ candidatos ≤ `EXHAUSTIVE_LIMIT = 64`, si no descenso coordinado acotado — solo claves estrictamente mejores, CK; jamás aplica cambios). Sin caché/hilos, sin importar UI |
 
-### `ui/` (Fase 3–13)
+### `ui/` (Fase 3–14.1)
 Presentación. Sin fórmulas RF; solo pintar, capturar eventos y llamar
 al engine / `EditorSession`.
 
 | Módulo | Responsabilidad |
 |---|---|
-| `session.py` | `EditorSession`: operaciones puras sobre `Project` (testeable sin Tk): editor + guardar/abrir/nuevo + dirty state + `heatmap_metric`/`apply_rf_settings` (F7) + **CRUD de `Space`/`Opening` (F8)** + **CRUD de `Obstacle` (F9)**: `add_obstacle`/`set_obstacle_properties`/`move_obstacle` (clamps, `replace` revalida el dominio, **invalidan heatmap y dirty** — BP), passthrough de `openings`/`obstacles` a `simulate_coverage` + **configuración RF por AP (F10)**: `set_ap_rf_config` (triple atómico validado en `core.channel`, dirty/invalidación solo con cambio real — BU) y `resolve_band_for_ap` (`ap.band_id` o la de la corrida o la activa — BS), usado por `run_heatmap`/`run_simulation` + **interferencia (F11)**: `_interference_context_aps` (vecinos con canal en la misma banda, CB), `_spectral_emissions`, anotación **antes** de combinar en `run_heatmap`/`run_simulation` con puerta `len(results) >= 2` + `ap.channel is not None` (BX/CB), métrica `interference` validada contra `HEATMAP_METRICS` del renderer (CC), `ap_interference_lines` (panel, solo datos reales) y header de `heatmap_stats_text` + **SINR (F12)**: `apply_rf_settings(..., sinr_target_db=)` opcional atómico (CH), `annotate_sinr` tras F11 en `run_heatmap`/`run_simulation` (CF), `_ap_evaluations` (helper compartido tras refactor de `ap_interference_lines`, salidas F11 idénticas), `ap_sinr_lines`, cabecera SINR en `heatmap_stats_text`/`client_rssi_lines`/`simulation_summary_text` y docstring de `set_heatmap_metric` + **Optimización de canales (F13)**: `optimize_channels` (simula la banda una vez y delega en el motor — propuesta **pura**, sin dirty ni invalidación, CM) y `apply_channel_assignment` (paso «Aplicar»: reutiliza `set_ap_rf_config` por AP, dirty/invalidación solo con cambio real) |
-| `viewport.py` | **Único** conversor metros ↔ píxeles (escala isotrópica) |
-| `editor_canvas.py` | Canvas: capas floor → heatmap → spaces → **obstacles (F9)** → walls (con huecos) → APs → leyenda (RSSI, SNR, **Interferencia — F11** o **SINR — F12**); hit-test AP → cliente → openings → **obstacles** → paredes → espacios (F9); tools `Zona` y **`Objeto` con dos clics + preview (F8/F9)**; arrastre de obstáculo con clamp (F9); **etiqueta `CH n · w MHz` bajo el AP solo si tiene canal configurado (F10, BU)** |
+| `session.py` | `EditorSession`: operaciones puras sobre `Project` (testeable sin Tk): editor + guardar/abrir/nuevo + dirty state + `heatmap_metric`/`apply_rf_settings` (F7) + **CRUD de `Space`/`Opening` (F8)** + **CRUD de `Obstacle` (F9)**: `add_obstacle`/`set_obstacle_properties`/`move_obstacle` (clamps, `replace` revalida el dominio, **invalidan heatmap y dirty** — BP), passthrough de `openings`/`obstacles` a `simulate_coverage` + **configuración RF por AP (F10)**: `set_ap_rf_config` (triple atómico validado en `core.channel`, dirty/invalidación solo con cambio real — BU) y `resolve_band_for_ap` (`ap.band_id` o la de la corrida o la activa — BS), usado por `run_heatmap`/`run_simulation` + **interferencia (F11)**: `_interference_context_aps` (vecinos con canal en la misma banda, CB), `_spectral_emissions`, anotación **antes** de combinar en `run_heatmap`/`run_simulation` con puerta `len(results) >= 2` + `ap.channel is not None` (BX/CB), métrica `interference` validada contra `HEATMAP_METRICS` del renderer (CC), `ap_interference_lines` (panel, solo datos reales) y header de `heatmap_stats_text` + **SINR (F12)**: `apply_rf_settings(..., sinr_target_db=)` opcional atómico (CH), `annotate_sinr` tras F11 en `run_heatmap`/`run_simulation` (CF), `_ap_evaluations` (helper compartido tras refactor de `ap_interference_lines`, salidas F11 idénticas), `ap_sinr_lines`, cabecera SINR en `heatmap_stats_text`/`client_rssi_lines`/`simulation_summary_text` y docstring de `set_heatmap_metric` + **Optimización de canales (F13)**: `optimize_channels` (simula la banda una vez y delega en el motor — propuesta **pura**, sin dirty ni invalidación, CM) y `apply_channel_assignment` (paso «Aplicar»: reutiliza `set_ap_rf_config` por AP, dirty/invalidación solo con cambio real) + **historial (F14-G)**: `@undoable` en todas las operaciones mutantes con snapshot `(deepcopy(project), selection)` y tope `MAX_UNDO_STEPS = 50` + **gestos (F14.1)**: `begin_edit`/`commit_edit`/`cancel_edit` ⇒ UNA entrada por arrastre, ninguna si no hay cambio real |
+| `geometry_view.py` | **Fase 14-C:** `GeometryView` — instantánea **congelada** del piso activo (`walls`/`openings`/`obstacles`/`spaces`/`access_points`/`clients` en metros); el Canvas deja de recorrer listas internas del documento y `set_active_floor` dirige todo el CRUD al piso seleccionado |
+| `viewport.py` | **Único** conversor metros ↔ píxeles (escala isotrópica). **F14.1:** `world_width_m`/`world_height_m` son **obligatorios** — el viewport nunca inventa el tamaño del plano (sin 12×8 implícito); zoom/pan de la F14-E |
+| `editor_canvas.py` | Canvas: capas floor → heatmap → spaces → **obstacles (F9)** → walls (con huecos) → APs → leyenda (RSSI, SNR, **Interferencia — F11** o **SINR — F12**); hit-test AP → cliente → openings → **obstacles** → paredes → espacios (F9); tools `Zona` y **`Objeto` con dos clics + preview (F8/F9)**; arrastre de obstáculo con clamp (F9); **etiqueta `CH n · w MHz` bajo el AP solo si tiene canal configurado (F10, BU)**; **F14-D/14-E:** arrastre de extremos, paredes, espacios y objetos con snap + zoom/pan/rejilla; **F14.1:** `ButtonPress-1` ⇒ `begin_edit()` y `ButtonRelease-1` ⇒ `commit_edit()`, así **un arrastre completo es UN paso de historial** |
 | `coverage_renderer.py` | `SimulationResult` → imagen Pillow RGBA + leyenda + escalas; registro único `HEATMAP_METRICS = ("rssi", "snr", "interference", "sinr")` (CC + **F12, CF**) + escala/leyenda/rama de interferencia (`interference_to_color`, dirección invertida, `None` ⇒ «sin interferencia») + **escala/leyenda SINR (F12)**: alias de paradas de SNR con dirección directa, `sinr_to_color` (`None` ⇒ gris neutro), fila de leyenda con `sinr_target_db` y bloque de stats condicional; escalas `rssi`/`snr` (F7) |
-| `app.py` | Ventana principal, **debounce ~150 ms** del heatmap, menú **Archivo** (Nuevo/Abrir/Guardar/Guardar como) y confirmación de cambios sin guardar; tecla `e` → tool Zona, tecla **`o` → tool Objeto (F9)**, Escape limpia trazos (F8/F9); **`properties.refresh()` tras simular y tras el heatmap (F11)** para que el bloque de interferencia del panel esté siempre al día; **`_on_optimize_channels` (F13): lanza la propuesta, captura `ValueError`/`KeyError`/`MaterialAttenuationError` y solo aplica vía el diálogo** |
+| `app.py` | Ventana principal, **debounce ~150 ms** del heatmap, menú **Archivo** (Nuevo/Abrir/Guardar/Guardar como) y confirmación de cambios sin guardar; tecla `e` → tool Zona, tecla **`o` → tool Objeto (F9)**, Escape limpia trazos (F8/F9); **`properties.refresh()` tras simular y tras el heatmap (F11)** para que el bloque de interferencia del panel esté siempre al día; **`_on_optimize_channels` (F13): lanza la propuesta, captura `ValueError`/`KeyError`/`MaterialAttenuationError` y solo aplica vía el diálogo**; **F14-E/G:** menú **Ver** (zoom/ajuste a rejilla/paso) y menú **Editar** (Deshacer/Rehacer, Ctrl+Z/Ctrl+Y); **F14.1:** Escape cancela el gesto de arrastre en curso (`cancel_edit` + `reset_interaction`) |
 | `panels/toolbar.py` | Herramienta (incl. **Zona** y **Objeto**, F8/F9), banda, resolución, toggle heatmap, selector de AP, **métrica RSSI/SNR/Interferencia/SINR y Config RF… (F7 + F11 + F12, `METRIC_LABEL_BY_ID`)**, **«Opt. canal…» (F13, callback `on_optimize`)**, **Dimensiones…** (F8 renombra el viejo `Espacio…`) |
 | `panels/properties.py` | Propiedades del elemento + resumen simulación/heatmap + bloque RF global (F7, con **`Objetivo SINR` desde F12**) + **Espacio (nombre/función) y Apertura (tipo/offsets) + `+ Puerta`/`+ Ventana` desde la pared (F8)** + **marco Objeto: nombre/tipo/material/override `band_id=dB` (F9)** + **marco «Radio del AP»: banda/canal/ancho desde `core.channel`, frecuencia y estándar de solo lectura, Aplicar atómico con error controlado (F10, BU)** + **bloque «Interferencia» del AP (F11, CC) + líneas SINR (F12): `session.ap_sinr_lines` con datos reales o mensajes honestos de ausencia** |
 | `dialogs/rf_dialog.py` | **F7:** diálogo de configuración RF (ruido, objetivos, estándar, ancho); **F12:** fila «Objetivo SINR (dB)» y callback de 6 elementos; captura `ValueError` |
 | `dialogs/channel_optimization_dialog.py` | **Fase 13 (nuevo):** diálogo de **PROPUESTA** — método de búsqueda, evaluaciones, score SINR actual → propuesto, tabla AP actual/propuesto; «Aplicar propuesta» **deshabilitado si `changed=False`** y aplicación delegada 100 % en `on_apply` (CM: nunca auto-aplica) |
 
-### `persistence/` (Fase 6, endurecida en 6.1)
+### `persistence/` (Fase 6–14, schema v1; endurecida en 6.1)
 Representación externa del proyecto en **JSON**. Convierte
 `Project → dict → archivo` y `archivo → Project` con validación estricta
 (esquema, límites, NaN/Inf, booleans ≠ números, ids únicos, material
@@ -153,6 +171,13 @@ duplicados.
 ### `tests/`
 Pruebas deterministas con pytest. Incluyen golden data extraída del DOCX
 legacy (Tablas 2 y 3) y pruebas de grid/heatmap **sin abrir Tkinter**.
+
+Las fases F14 tienen suite propia: `factories.py` (escenarios A/B/C que
+**son** `Project`), `test_scenario_ab.py` (14-A), `test_no_implicit_dimensions.py`
+(14-B), `test_geometry_view.py` (14-C), `test_geometry_editing.py` (14-D),
+`test_grid_snap.py`/`test_viewport.py` (14-E), `test_measure_tool.py` (14-F),
+`test_undo_redo.py` (14-G), `test_persistence_f14.py` (14-H),
+`test_rf_after_editing.py` (14-I) y `test_gesture_undo.py` (14.1).
 
 ## Flujo de datos (editor + paredes + heatmap)
 

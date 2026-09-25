@@ -647,6 +647,9 @@ class WifiPlannerApp(tk.Tk):
         self.session.wall_drag_start = None
         self.session.space_drag_start = None
         self.session.obstacle_drag_start = None
+        # Fase 14.1: Escape cancela el arrastre en curso (sin historial).
+        self.session.cancel_edit()
+        self.canvas.reset_interaction()
         self.session.select(None, None)
         self._set_tool(Tool.SELECT)
         self.properties.refresh()

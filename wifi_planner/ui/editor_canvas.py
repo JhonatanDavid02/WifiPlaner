@@ -815,6 +815,16 @@ class EditorCanvas(tk.Canvas):
                     self._drag_space_offset = Point2D(
                         world.x - space.rect.x, world.y - space.rect.y
                     )
+            if (
+                self._drag_ap_id
+                or self._drag_client_id
+                or self._drag_obstacle_id
+                or self._drag_wall_id
+                or self._drag_wall_endpoint
+                or self._drag_space_id
+            ):
+                # Fase 14.1: el arrastre completo será UN solo paso de undo.
+                self.session.begin_edit()
             self.on_model_changed()
             return
 
@@ -905,6 +915,9 @@ class EditorCanvas(tk.Canvas):
             or self._drag_wall_endpoint
             or self._drag_space_id
         ):
+            # Fase 14.1: cierra el gesto ⇒ UNA sola entrada de historial
+            # para todo el movimiento (o ninguna si no hubo cambio real).
+            self.session.commit_edit()
             self._drag_ap_id = None
             self._drag_client_id = None
             self._drag_obstacle_id = None

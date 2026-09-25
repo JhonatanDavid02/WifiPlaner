@@ -301,7 +301,9 @@ def test_build_heatmap_image_none_without_evaluations(session):
     from ui.coverage_renderer import build_heatmap_image
 
     empty = SimulationResult(project_name="x", band_id="band_2_4")
-    vp = Viewport()
+    vp = Viewport(
+        world_width_m=session.floor_width_m, world_height_m=session.floor_height_m
+    )
     assert build_heatmap_image(empty, vp) is None
 
 
@@ -311,7 +313,9 @@ def test_build_heatmap_image_infer_cell_size(session):
     session.add_access_point(Point2D(1.0, 1.0))
     session.set_grid_resolution(1.0)
     result = session.run_heatmap("band_2_4")
-    vp = Viewport()
+    vp = Viewport(
+        world_width_m=session.floor_width_m, world_height_m=session.floor_height_m
+    )
     # Inferido ≈ 1.0 m
     inferred = _infer_cell_size(result.evaluations)
     assert inferred == pytest.approx(1.0, abs=1e-6)

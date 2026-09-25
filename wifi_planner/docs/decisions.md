@@ -1395,6 +1395,98 @@ escala + leyenda + rama de pintado), `ui/panels/toolbar.py` (etiqueta),
 
 ---
 
+## Fase 14 - Editor 2D building-agnostic
+
+La Fase 14 convierte el editor en **agnóstico del edificio**: el usuario
+define el escenario y la misma secuencia F10 → F11 → F12 → (F13) lo
+procesa sin ninguna rama por edificio. La fuente única de verdad sigue
+siendo **`Project` + `Floor` + geometría**.
+
+### Decisión CP — El escenario es el `Project`; no hay modelo `Scenario`/`Building`
+
+- **Decisión:** un «escenario» es simplemente un `Project` con sus
+  `Floor` (`walls`, `openings`, `obstacles`, `spaces`) y sus
+  `access_points`/`clients`. **No se creó ni se creará** una clase
+  `Scenario` o `Building` paralela. `tests/factories.py` expone
+  `scenario_a/b/c` como *helpers* que **devuelven** `Project`, y
+  `run_rf_pipeline` es la misma función para cualquier edificio.
+- **Razón:** un segundo modelo duplicaría la geometría y obligaría al
+  motor a conocer edificios concretos, deshaciendo la independencia
+  construida desde Fase 1.
+
+### Decisión CQ — Sin dimensiones implícitas: 12×8 es un ejemplo, no un fallback
+
+- **Decisión:** `Floor.width_m/height_m` son opcionales (`None`) y las
+  operaciones que necesitan el tamaño **fallan con un error claro** en
+  lugar de inventar un plano. El 12×8 solo sobrevive (a) como valor
+  inicial **explícito y cambiable** de «Proyecto nuevo»
+  (`DEFAULT_FLOOR_WIDTH_M/HEIGHT_M`) y (b) como *fixture* de tests.
+  En F14.1 `Viewport` pasa a **exigir** sus dimensiones de mundo.
+- **Razón:** un edificio real nunca debe depender implícitamente de
+  12×8 (spec F14-B).
+
+### Decisión CR — Instantánea de geometría y piso activo
+
+- **Decisión:** el Canvas no recorre listas internas del documento:
+  consume `session.geometry_view`, una instantánea congelada del piso
+  activo (`GeometryView`, F14-C), y todo el CRUD opera sobre
+  `active_floor` (`set_active_floor`).
+- **Razón:** acoplamiento explícito vista ↔ documento y soporte de
+  varios pisos sin duplicar estado ni exponer estructuras mutables.
+
+### Decisión CS — Undo/redo por snapshots del documento con tope de 50
+
+- **Decisión:** cada operación mutante decorada con `@undoable` guarda
+  `(deepcopy(project), selection)` **antes** de ejecutar y solo lo
+  apila si no hubo excepción; las llamadas anidadas cuentan como **un**
+  paso; `MAX_UNDO_STEPS = 50` descarta los más antiguos; undo/redo no
+  re-graban historial; el límite, Ctrl+Z/Ctrl+Y y el menú «Editar» son
+  contrato de la Fase 14-G.
+- **Razón:** corrección y recuperación exacta sin la complejidad de un
+  patrón de comandos, dado el tamaño del documento.
+
+### Decisión CT — RF sobre geometría editada (F14-I)
+
+- **Decisión:** `tests/test_rf_after_editing.py` verifica que las
+  operaciones de F14 alteran el pipeline F10→F11→F12→F13 de forma
+  coherente, que `undo` restaura resultados **idénticos** y que
+  guardar/cargar no cambia la RF. El test se adapta al contrato
+  existente de `OptimizationResult` (`.search`, `.evaluation_count`,
+  `.optimized_assignment`); el motor no se toca.
+- **Razón:** la fase se cierra demostrando el efecto de la edición
+  sobre los resultados, sin introducir F15.
+
+---
+
+## Fase 14.1 - Estabilización: undo por gesto
+
+### Decisión CU — Una interacción continua = UNA entrada de historial
+
+- **Decisión:** un arrastre (`mouse_down` → `mouse_move` × N →
+  `mouse_up`) produce **una sola** entrada de undo. `EditorSession`
+  expone `begin_edit()` (congela `(deepcopy(project), selection)`),
+  `commit_edit()` (apila **exactamente un** paso) y `cancel_edit()`
+  (restaura el estado previo sin tocar las pilas). Mientras el gesto
+  está abierto, `@undoable` **ejecuta la operación pero no apila**
+  snapshots intermedios.
+- **Sin cambio real ⇒ sin entrada:** `commit_edit()` no registra nada
+  si el gesto no tocó el documento o si terminó **exactamente** en el
+  punto de partida (comparación estructural del `Project`), y en ese
+  caso devuelve además el marcado `dirty` a su valor previo.
+- **Cierre:** el lienzo abre el gesto en `<ButtonPress-1>` cuando hay
+  arrastre (AP, cliente, obstáculo, espacio, pared o extremo) y lo
+  cierra en `<ButtonRelease-1>`; Escape lo cancela
+  (`ui/app.py: cancel_edit + reset_interaction`). Un `undo()` durante
+  el gesto lo cancela en lugar de apilar un snapshot de un documento a
+  medias; `clear_history()` (documento nuevo/abierto) lo descarta.
+- **Razón:** antes cada `mouse_motion` empujaba un snapshot con copia
+  profunda del proyecto, de modo que **un solo arrastre agotaba las 50
+  entradas** del historial y `Ctrl+Z` no revertía el movimiento
+  completo. Se preserva íntegro el sistema F14-G: mismo decorador,
+  mismo límite, mismos atajos, mismas pilas.
+
+---
+
 ## Discrepancias encontradas (no resueltas silenciosamente)
 
 ### 1. Distancias `d_max` contradictorias
