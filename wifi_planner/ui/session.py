@@ -794,42 +794,75 @@ class EditorSession:
 
     @undoable
     def set_ap_rf_config(
-        self, ap_id: str, *, band_id: str, channel: int, width_mhz: int
+        self,
+        ap_id: str,
+        *,
+        band_id: str,
+        channel: int,
+        width_mhz: int,
+        p_tx_dbm: float | None = None,
+        wifi_standard: str | None = None,
     ) -> None:
-        """Configura banda + canal + ancho de un AP de forma atómica (F10).
+        """Configura la radio de un AP de forma atómica (F10 + config de AP).
 
-        El triple se valida contra el catálogo de canales
-        (``core.channel.validate_channel_config``, decisión BT) ANTES de
-        tocar el proyecto: si algo falla, nada cambia y no se marca
-        ``dirty``. Si los valores son idénticos a los actuales no hay
-        mutación (decisión BU: dirty solo si el proyecto cambió).
+        El triple (banda, canal, ancho) se valida contra el catálogo de
+        canales (``core.channel.validate_channel_config``, decisión BT)
+        ANTES de tocar el proyecto: si algo falla, nada cambia y no se
+        marca ``dirty``. Si los valores son idénticos a los actuales no
+        hay mutación (decisión BU: dirty solo si el proyecto cambió).
 
         Invalida el heatmap con la invalidación genérica del pipeline
         F4: el canal en sí no altera RSSI (decisión BR), pero la banda
         configurada sí determina la frecuencia de simulación del AP y
         el cambio es configuración persistible.
 
+        ``p_tx_dbm`` y ``wifi_standard`` son **opcionales** (``None``
+        conserva el actual): son parámetros que YA existen en
+        ``RadioConfiguration`` (F7); aquí solo se conectan al panel de
+        la UI para que un solo «Aplicar» sea UNA entrada de historial.
+        ``wifi_standard`` se valida contra ``WIFI_STANDARDS`` al
+        construir el reemplazo y ``p_tx_dbm`` debe ser finito.
+
         Raises:
             KeyError: si el AP o la banda no existen.
-            ValueError: si el canal o el ancho no son válidos para la banda.
+            ValueError: si el canal, el ancho, la potencia o el
+                estándar no son válidos (el modelo queda intacto).
         """
         for index, ap in enumerate(self.project.access_points):
-            if ap.id == ap_id:
-                band = self.project.get_band(band_id)  # valida existencia
-                validate_channel_config(band, channel, width_mhz)
-                if (
-                    ap.band_id == band_id
-                    and ap.channel == channel
-                    and ap.radio.channel_width_mhz == width_mhz
+            if ap.id != ap_id:
+                continue
+            band = self.project.get_band(band_id)  # valida existencia
+            validate_channel_config(band, channel, width_mhz)
+            radio = replace(ap.radio, channel_width_mhz=int(width_mhz))
+            if p_tx_dbm is not None:
+                if isinstance(p_tx_dbm, bool) or not isinstance(
+                    p_tx_dbm, (int, float)
                 ):
-                    return  # sin cambio real: sin dirty ni invalidación
-                radio = replace(ap.radio, channel_width_mhz=int(width_mhz))
-                self.project.access_points[index] = replace(
-                    ap, band_id=band_id, channel=int(channel), radio=radio
-                )
-                self.invalidate_heatmap()
-                self.mark_dirty()
-                return
+                    raise ValueError(
+                        "AccessPoint.radio.p_tx_dbm debe ser un número (dBm)."
+                    )
+                p_tx = float(p_tx_dbm)
+                if not math.isfinite(p_tx):
+                    raise ValueError(
+                        "AccessPoint.radio.p_tx_dbm debe ser finito "
+                        f"(got {p_tx_dbm!r})."
+                    )
+                radio = replace(radio, p_tx_dbm=p_tx)
+            if wifi_standard is not None:
+                # RadioConfiguration.__post_init__ valida WIFI_STANDARDS.
+                radio = replace(radio, wifi_standard=str(wifi_standard))
+            if (
+                ap.band_id == band_id
+                and ap.channel == channel
+                and radio == ap.radio
+            ):
+                return  # sin cambio real: sin dirty ni invalidación
+            self.project.access_points[index] = replace(
+                ap, band_id=band_id, channel=int(channel), radio=radio
+            )
+            self.invalidate_heatmap()
+            self.mark_dirty()
+            return
         raise KeyError(f"Access Point no encontrado: {ap_id}")
 
     def set_heatmap_enabled(self, enabled: bool) -> None:

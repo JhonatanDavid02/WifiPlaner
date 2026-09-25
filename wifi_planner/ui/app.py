@@ -660,6 +660,11 @@ class WifiPlannerApp(tk.Tk):
         self.render_project()
         self.properties.refresh()
         self.toolbar._tool_var.set(self.session.tool.value)
+        # Fase 14.2: la banda activa puede cambiar al editar un AP; la
+        # toolbar debe reflejar siempre la banda real de la simulación.
+        self.toolbar.set_band_label(
+            BAND_LABEL_BY_ID.get(self.session.band_id, "2.4 GHz")
+        )
         self._refresh_ap_selector()
         self._update_title()
         self._schedule_heatmap()
@@ -706,10 +711,24 @@ class WifiPlannerApp(tk.Tk):
             return
         except ValueError as exc:
             # Sin AP u otro error de modelo: no es fatal para el editor
-            self.session.last_heatmap_error = str(exc)
+            message = str(exc)
+            if "bandas distintas" in message:
+                # Fase 14.2: el heatmap combinado es por banda (contrato
+                # F5 intacto); traducimos el error a una acción clara.
+                message = (
+                    "No se puede combinar el heatmap: hay APs configurados\n"
+                    "en bandas distintas.\n\n"
+                    "Opciones:\n"
+                    "• Selecciona cada AP y ponlos en la misma banda\n"
+                    "  (Configuración RF del AP → Banda → Aplicar), o\n"
+                    "• Elige un AP concreto en el selector «AP:» de la\n"
+                    "  barra superior para verlo por separado.\n\n"
+                    f"Detalle: {message}"
+                )
+            self.session.last_heatmap_error = message
             self.canvas.clear_heatmap()
             self.render_project()
-            self.properties.show_heatmap_text(str(exc))
+            self.properties.show_heatmap_text(message)
             self._update_status_coords(None, None)
             return
 

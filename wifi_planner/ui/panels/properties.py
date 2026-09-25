@@ -28,9 +28,37 @@ from core.channel import (
     default_channel,
 )
 from core.obstacle import OBSTACLE_KINDS
-from core.radio import allowed_channel_widths_mhz, wifi_generation
+from core.radio import (
+    WIFI_STANDARDS,
+    allowed_channel_widths_mhz,
+    wifi_generation,
+)
 from core.wall import OPENING_KINDS
 from ui.session import EditorSession, SelectionKind
+
+
+def ap_config_unchanged(
+    ap,
+    *,
+    band_id: str,
+    channel: int,
+    width_mhz: int,
+    p_tx_dbm: float,
+    wifi_standard: str,
+) -> bool:
+    """True si el formulario coincide exactamente con el AP del modelo.
+
+    Función pura (sin Tk) usada por «Aplicar» para no crear una entrada
+    de historial sin efecto cuando el usuario no cambió nada (Fase 14.2).
+    No muta ``ap`` ni la sesión.
+    """
+    return (
+        ap.band_id == band_id
+        and ap.channel == channel
+        and ap.radio.channel_width_mhz == width_mhz
+        and ap.radio.p_tx_dbm == p_tx_dbm
+        and ap.radio.wifi_standard == wifi_standard
+    )
 
 
 class PropertiesPanel(ttk.Frame):
@@ -67,9 +95,9 @@ class PropertiesPanel(ttk.Frame):
         )
         self._info.pack(fill="x")
 
-        # --- Radio del AP (fase 10: banda/canal/ancho por AP — BS/BT) ---
+        # --- Configuración RF del AP (F10: banda/canal/ancho por AP) ---
         self._ap_radio_box = ttk.LabelFrame(
-            self, text="Radio del AP (Fase 10)", padding=8
+            self, text="Configuración RF del AP", padding=8
         )
         ap_radio_box = self._ap_radio_box
         ap_radio_box.pack(fill="x", padx=8, pady=4)
@@ -104,15 +132,42 @@ class PropertiesPanel(ttk.Frame):
         )
 
         ttk.Label(ap_radio_box, text="Estándar:").grid(row=4, column=0, sticky="w")
-        self._ap_standard_var = tk.StringVar(value="—")
-        ttk.Label(ap_radio_box, textvariable=self._ap_standard_var).grid(
-            row=4, column=1, sticky="w", pady=2
+        self._ap_standard_var = tk.StringVar()
+        self._ap_standard_combo = ttk.Combobox(
+            ap_radio_box,
+            textvariable=self._ap_standard_var,
+            values=list(WIFI_STANDARDS),
+            state="readonly",
+            width=16,
+        )
+        self._ap_standard_combo.grid(row=4, column=1, sticky="ew", pady=2)
+
+        ttk.Label(ap_radio_box, text="Potencia TX (dBm):").grid(
+            row=5, column=0, sticky="w"
+        )
+        self._ap_ptx_var = tk.StringVar()
+        ttk.Entry(ap_radio_box, textvariable=self._ap_ptx_var, width=16).grid(
+            row=5, column=1, sticky="ew", pady=2
         )
 
+        # Aviso de coherencia al cambiar de banda (canal/ancho ajustados).
+        self._ap_hint_var = tk.StringVar(value="")
+        # AP al que pertenece el aviso mostrado (None = sin aviso).
+        self._ap_hint_for: str | None = None
+        ttk.Label(
+            ap_radio_box, textvariable=self._ap_hint_var, wraplength=230
+        ).grid(row=6, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+
+        apply_row = ttk.Frame(ap_radio_box)
+        apply_row.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(6, 0))
         self._ap_apply_btn = ttk.Button(
-            ap_radio_box, text="Aplicar radio", command=self._ap_apply
+            apply_row, text="Aplicar", command=self._ap_apply
         )
-        self._ap_apply_btn.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        self._ap_apply_btn.pack(side="left", expand=True, fill="x", padx=(0, 3))
+        self._ap_reset_btn = ttk.Button(
+            apply_row, text="Restablecer", command=self._ap_reset
+        )
+        self._ap_reset_btn.pack(side="left", expand=True, fill="x", padx=(3, 0))
         ap_radio_box.columnconfigure(1, weight=1)
         self._refresh_ap_bands()
 
@@ -306,8 +361,57 @@ class PropertiesPanel(ttk.Frame):
         )
         self._heat_text.pack(fill="both", expand=True)
 
+        # Fase 14.2: orden canónico de los bloques. «Selección» y
+        # «Simulación / Heatmap» son siempre visibles; los demás solo
+        # cuando el elemento seleccionado corresponde, para que el panel
+        # quepa en pantalla y el usuario vea qué puede editar.
+        self._frames: list[tuple[str, ttk.LabelFrame, dict]] = [
+            ("sel", sel_box, dict(fill="x", padx=8, pady=(8, 4))),
+            ("ap", self._ap_radio_box, dict(fill="x", padx=8, pady=4)),
+            ("wall", wall_box, dict(fill="x", padx=8, pady=4)),
+            ("space", space_box, dict(fill="x", padx=8, pady=4)),
+            ("opening", opening_box, dict(fill="x", padx=8, pady=4)),
+            ("obstacle", obstacle_box, dict(fill="x", padx=8, pady=4)),
+            ("pos", pos_box, dict(fill="x", padx=8, pady=4)),
+            (
+                "sim",
+                sim_box,
+                dict(fill="both", expand=True, padx=8, pady=(4, 8)),
+            ),
+        ]
+        self._visible_frames: set[str] = set()
+
         self._refresh_materials()
         self.refresh()
+
+    def _update_frame_visibility(self, kind) -> None:
+        """Muestra solo los bloques relevantes para el elemento elegido.
+
+        Presentación pura: no toca el modelo. Solo repackea cuando
+        cambia el conjunto visible (evita parpadeos en cada refresh).
+        """
+        wanted = {"sel", "sim"}
+        if kind == SelectionKind.AP:
+            wanted |= {"ap", "pos"}
+        elif kind == SelectionKind.WALL:
+            wanted |= {"wall", "pos"}
+        elif kind == SelectionKind.SPACE:
+            wanted |= {"space", "pos"}
+        elif kind == SelectionKind.OPENING:
+            wanted |= {"opening"}
+        elif kind == SelectionKind.OBSTACLE:
+            wanted |= {"obstacle", "pos"}
+        elif kind == SelectionKind.CLIENT:
+            wanted |= {"pos"}
+
+        if wanted == self._visible_frames:
+            return
+        for _name, widget, _kwargs in self._frames:
+            widget.pack_forget()
+        for name, widget, kwargs in self._frames:
+            if name in wanted:
+                widget.pack(**kwargs)
+        self._visible_frames = wanted
 
     def show_heatmap_text(self, text: str) -> None:
         self._set_text(self._heat_text, text)
@@ -357,24 +461,50 @@ class PropertiesPanel(ttk.Frame):
         self._ap_freq_var.set(f"{channel.center_frequency_mhz:g} MHz")
 
     def _ap_band_selected(self, _event=None) -> None:
-        """Al cambiar la banda: canales y anchos de esa familia (F10)."""
+        """Al cambiar la banda: canales y anchos de esa familia (F10).
+
+        Si el canal elegido no existe en la banda nueva se propone el
+        canal por defecto de esa banda y se avisa (Fase 14.2): nunca se
+        conserva en silencio una configuración inválida.
+        """
         band = self._ap_current_band()
         if band is None:
             return
         numbers = channel_numbers_for_frequency(band.frequency_mhz)
         self._ap_channel_combo["values"] = [str(n) for n in numbers]
-        self._ap_channel_var.set(str(default_channel(band).number))
+        current = self._ap_channel_var.get().strip()
+        try:
+            current_int = int(current)
+        except ValueError:
+            current_int = None
+        if current_int is not None and current_int in numbers:
+            self._ap_channel_var.set(str(current_int))
+            hint = f"{band.name}: el canal {current_int} sigue siendo válido."
+        else:
+            channel = default_channel(band).number
+            self._ap_channel_var.set(str(channel))
+            hint = (
+                f"El canal {current or '—'} no existe en {band.name}: "
+                f"se propone el canal {channel}."
+            )
         widths = [str(w) for w in allowed_channel_widths_mhz(band.frequency_mhz)]
         self._ap_width_combo["values"] = widths
         if self._ap_width_var.get() not in widths:
             self._ap_width_var.set(widths[0])
         self._ap_update_freq_label()
+        selected = self._session.selected_ap()
+        self._ap_hint_for = selected.id if selected is not None else None
+        self._ap_hint_var.set(hint)
 
     def _ap_channel_selected(self, _event=None) -> None:
         self._ap_update_freq_label()
 
     def _ap_load_controls(self, ap) -> None:
         """Sincroniza los controles Radio con el AP seleccionado."""
+        if self._ap_hint_for != ap.id:
+            # Cambió el AP: el aviso anterior ya no le corresponde.
+            self._ap_hint_var.set("")
+            self._ap_hint_for = ap.id
         self._refresh_ap_bands()
         band = self._ap_display_band(ap)
         self._ap_band_var.set(band.name)
@@ -389,14 +519,14 @@ class PropertiesPanel(ttk.Frame):
         self._ap_width_combo["values"] = widths
         self._ap_width_var.set(str(ap.radio.channel_width_mhz))
         self._ap_update_freq_label()
-        self._ap_standard_var.set(
-            f"{ap.radio.wifi_standard} "
-            f"({wifi_generation(ap.radio.wifi_standard, band.frequency_mhz)})"
-        )
+        self._ap_standard_var.set(ap.radio.wifi_standard)
+        self._ap_ptx_var.set(f"{ap.radio.p_tx_dbm:g}")
         self._ap_band_combo.configure(state="readonly")
         self._ap_channel_combo.configure(state="readonly")
         self._ap_width_combo.configure(state="readonly")
+        self._ap_standard_combo.configure(state="readonly")
         self._ap_apply_btn.configure(state="normal")
+        self._ap_reset_btn.configure(state="normal")
 
     def _ap_clear_controls(self) -> None:
         self._ap_band_var.set("")
@@ -405,11 +535,16 @@ class PropertiesPanel(ttk.Frame):
         self._ap_width_combo["values"] = []
         self._ap_width_var.set("")
         self._ap_freq_var.set("—")
-        self._ap_standard_var.set("—")
+        self._ap_standard_var.set("")
+        self._ap_ptx_var.set("")
+        self._ap_hint_var.set("")
+        self._ap_hint_for = None
         self._ap_band_combo.configure(state="disabled")
         self._ap_channel_combo.configure(state="disabled")
         self._ap_width_combo.configure(state="disabled")
+        self._ap_standard_combo.configure(state="disabled")
         self._ap_apply_btn.configure(state="disabled")
+        self._ap_reset_btn.configure(state="disabled")
 
     def _ap_rf_lines(self, ap) -> list[str]:
         """Líneas de configuración RF del AP para el bloque Selección."""
@@ -460,7 +595,11 @@ class PropertiesPanel(ttk.Frame):
             self._set_text(
                 self._info,
                 "Ningún elemento seleccionado.\n\n"
-                "Usa las herramientas para crear paredes, APs o clientes.\n\n"
+                "1. Elige una herramienta y dibuja en el plano.\n"
+                "2. Pasa a «Seleccionar» y haz clic en un AP para\n"
+                "   configurar su banda/canal en «Configuración RF\n"
+                "   del AP», o en una pared para su material.\n"
+                "3. Pulsa «Ejecutar simulación» para ver la cobertura.\n\n"
                 "Configuración RF (Config RF…):\n"
                 f"  Piso de ruido: {radio.noise_floor_dbm:g} dBm\n"
                 f"  Objetivo RSSI: > {thresholds.rssi_target_dbm:g} dBm\n"
@@ -685,6 +824,9 @@ class PropertiesPanel(ttk.Frame):
         if session.last_heatmap is not None or session.last_heatmap_error:
             self._set_text(self._heat_text, session.heatmap_stats_text())
 
+        # Fase 14.2: solo los bloques que aplican al elemento elegido.
+        self._update_frame_visibility(kind)
+
     def show_simulation_text(self, text: str) -> None:
         self._set_text(self._sim_text, text)
 
@@ -852,24 +994,84 @@ class PropertiesPanel(ttk.Frame):
     # ------------------------------------------------------------------
 
     def _ap_apply(self) -> None:
+        """Aplica TODO el bloque de una vez (UNA entrada de undo).
+
+        Transaccional: se validan todos los campos antes de tocar el
+        modelo; si algo falla, el AP queda exactamente como estaba.
+        """
         ap = self._session.selected_ap()
         if not ap:
             return
         band = self._ap_current_band()
         if band is None:
-            messagebox.showerror("Radio del AP", "Selecciona una banda.")
+            messagebox.showerror("Configuración RF del AP", "Selecciona una banda.")
             return
         try:
             channel = int(self._ap_channel_var.get().strip())
             width = int(self._ap_width_var.get().strip())
         except ValueError:
-            messagebox.showerror("Radio del AP", "Canal o ancho inválido.")
+            messagebox.showerror(
+                "Configuración RF del AP", "Canal o ancho inválido."
+            )
+            return
+        raw_ptx = self._ap_ptx_var.get().strip()
+        try:
+            p_tx = float(raw_ptx)
+        except ValueError:
+            messagebox.showerror(
+                "Configuración RF del AP",
+                f"Potencia TX inválida: {raw_ptx or 'vacía'} (usa un número en dBm).",
+            )
+            return
+        standard = self._ap_standard_var.get().strip()
+        if standard not in WIFI_STANDARDS:
+            messagebox.showerror(
+                "Configuración RF del AP", f"Estándar no soportado: {standard!r}."
+            )
+            return
+        # La banda activa de la aplicación sigue a la del AP editado para
+        # que la toolbar y el heatmap hablen de la misma banda (Fase 14.2).
+        if ap_config_unchanged(
+            ap,
+            band_id=band.id,
+            channel=channel,
+            width_mhz=width,
+            p_tx_dbm=p_tx,
+            wifi_standard=standard,
+        ):
+            self._session.set_band(band.id)
+            self._on_changed()
+            self._ap_hint_for = ap.id
+            self._ap_hint_var.set(
+                "Sin cambios: el AP ya tiene esta configuración."
+            )
             return
         try:
             self._session.set_ap_rf_config(
-                ap.id, band_id=band.id, channel=channel, width_mhz=width
+                ap.id,
+                band_id=band.id,
+                channel=channel,
+                width_mhz=width,
+                p_tx_dbm=p_tx,
+                wifi_standard=standard,
             )
         except (KeyError, ValueError) as exc:
-            messagebox.showerror("Radio del AP", str(exc))
+            messagebox.showerror("Configuración RF del AP", str(exc))
             return
+        self._session.set_band(band.id)
         self._on_changed()
+        # El aviso se escribe DESPUÉS del refresh para que no se borre.
+        self._ap_hint_for = ap.id
+        self._ap_hint_var.set(
+            f"Aplicado: {band.name} · canal {channel} · {width} MHz · "
+            f"{p_tx:g} dBm · {standard}"
+        )
+
+    def _ap_reset(self) -> None:
+        """Restablece los controles a los valores actuales del AP (cancelar)."""
+        ap = self._session.selected_ap()
+        if ap is None:
+            return
+        self._ap_load_controls(ap)
+        self._ap_hint_for = ap.id
+        self._ap_hint_var.set("Restablecido a los valores del AP.")
