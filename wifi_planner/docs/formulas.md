@@ -563,15 +563,118 @@ LinkEvaluation:
 - `combine_results` sigue eligiendo el **mayor RSSI** por punto: la
   interferencia viaja como dato de la evaluación ganadora.
 
-### Frontera F11 → F12 (decisión CD)
+### Frontera F11 → F12 (decisión CD, ejecutada en F12/CF)
 
-F12 podrá definir, sobre esta base:
+La fórmula que F11 dejó prevista:
 
 ```
 SINR(dB) = P_rx_deseado − 10·log10(10^(NoiseFloor/10) + 10^(I_total/10))
 ```
 
-**Esa fórmula NO está implementada en F11**: no existe campo `sinr`,
-no hay CCA/CSMA, ni umbral de colisión, ni optimización de canal.
-`audit_f11.py` prohíbe ese vocabulario en los `.py` de F11 salvo
-negaciones explícitas.
+**no estaba implementada en F11** (sin campo `sinr`, sin CCA/CSMA, ni
+umbral de colisión, ni optimización de canal). F12 la implementa como
+capa paralela — véase la **sección 14**. CCA/CSMA, throughput, roaming
+y optimización de canales **siguen fuera de alcance** (lo comprueba
+`audit_f12.py`).
+
+---
+
+## 14. SINR (Fase 12): señal sobre ruido + interferencia
+
+> F12 convierte la interferencia de F11 en métrica de calidad de
+> enlace. Nada de esta sección modifica las secciones 1–13: RSSI, SOM,
+> SNR, calidad, veredicto e interferencia siguen siendo idénticos
+> (A/B byte-idéntico; regresiones F9/F10/F11 intactas).
+> Implementación única: `engine/sinr.py` (decisión CF).
+
+### Relación señal / (ruido + interferencia)
+
+```
+SINR = P_rx − 10·log10( 10^(NoiseFloor/10) + 10^(I_total/10) )    [dB]
+```
+
+- `P_rx` es el RSSI deseado (sección 3, **intocable**), `NoiseFloor`
+  el piso de ruido de la radio (sección 11) y `I_total` la
+  interferencia agregada de F11 (`interference_dbm`, sección 13).
+- Los dBm **no se suman**: el denominador se combina en el dominio
+  lineal (mismas utilidades dBm↔mW, decisión CA).
+- **Estabilidad numérica (decisión CF):** con
+  `D = max(N, I)` y `m = min(N, I)`:
+
+  ```
+  denominador = D + 10·log10( 1 + 10^((m − D)/10) )
+  ```
+
+  el exponente es siempre ≤ 0 (`10^x ∈ (0, 1]`): sin overflow, sin
+  división por cero y con underflow benigno (`10^x → 0 ⇒ log10(1)=0`).
+  Valores no finitos ⇒ `ValueError` (nunca se propaga `nan`/`inf`).
+- Redondeo a **2 decimales** en la función (patrón SNR/SOM).
+
+### Caso sin interferencia modelada (decisión CG)
+
+```
+interference_dbm = None   ⇒   denominador = NoiseFloor   ⇒   SINR = SNR
+```
+
+con igualdad **exacta** (misma aritmética redondeada que
+`signal_to_noise_ratio`): vale para proyectos F1–F10, AP sin canal,
+canales sin solapamiento, un solo AP y corridas sin contexto. El
+modelo F11 puede haber corrido y dejar `interference_dbm = None`
+(0 contribuidores): sigue cumpliéndose.
+
+### Secuencia canónica por punto (decisión CF)
+
+```
+simular propagación → RSSI → SNR → (F11) interferencia → (F12) SINR
+                     → combinar multi-AP (sigue MAX RSSI)
+```
+
+`evaluate_link` entrega ya `sinr_db`/`sinr_meets_target` (sin I
+⇒ igual al SNR); la sesión llama a `annotate_sinr` **después** de
+`annotate_interference` y **antes** de `combine_results`, de modo que
+la evaluación ganadora transporta su propio SINR. Nada de F1–F11
+cambia: `combine_results`/`_better` siguen decidiendo solo por
+`rx_power_dbm` y empate ⇒ menor `access_point_id`.
+
+### Umbral de SINR (decisión CH)
+
+```
+cumple = SINR ≥ sinr_target_db          (default 25 dB; rango [-20, 60])
+```
+
+- Comparación `>=` como el SNR (decisión AW); distinta de la
+  comparación estricta del RSSI objetivo (decisión C).
+- Default 25 dB = objetivo de SNR de F7: como **SINR ≤ SNR** siempre
+  (el denominador añade I al ruido), cumplir SINR(25) ⇒ SNR(25); sin
+  interferencia modelada ambos umbrales se cumplen juntos.
+- Diagnóstico propio de dos estados (`sinr_diagnostic`):
+  «SINR adecuado» / «SINR bajo». **No** toca `rf_diagnostic`
+  (sus 4 salidas de F7 siguen congeladas).
+
+### Estadísticas de SINR (Fase 12)
+
+Único bloque `sinr_stats_block` (definido en `engine/sinr.py`,
+consumido por simulador, combinador, panel y UI):
+
+```
+sinr_min_db, sinr_max_db, sinr_avg_db, sinr_target_db,
+points_meeting_sinr_target, sinr_ratio = points / point_count
+```
+
+Denominador: **puntos totales del grid** (mismo criterio que
+`snr_ratio`/`coverage_ratio`). En combinación multi-AP el SINR es el
+del AP **ganador por RSSI** (decisión BB/CF): jamás se promedia entre
+APs. `{}` si no hay evaluaciones ni SINR anotado ⇒ la UI distingue
+«sin datos» de «0 %».
+
+### Límites (honestidad del modelo)
+
+- SINR aquí es **RSSI vs ruido+I**: no modela CCA/CSMA, captura,
+  hidden node, temporización, MCS/throughput ni roaming (fuera de
+  alcance en F12, verificado por `audit_f12.py`).
+- Hereda todos los supuestos de F1–F11: FSPL, PSD plana, rectángulo
+  ideal de ocupación, una sola banda por emisión.
+- Es **información paralela**: no redefinirá RSSI/SOM/SNR/interferencia
+  ni decide ganadores; el heatmap de SINR es presentación (escala
+  0–45 dB con la misma dirección que SNR —mayor=mejor—, no la escala
+  invertida de interferencia).

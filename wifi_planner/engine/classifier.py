@@ -70,6 +70,37 @@ def meets_snr_target(snr_db: float, thresholds) -> bool:
     return snr_db >= thresholds.snr_target_db
 
 
+def meets_sinr_target(sinr_db: float, thresholds) -> bool:
+    """True si el SINR alcanza el objetivo configurado (F12).
+
+    Comparación SINR >= thresholds.sinr_target_db (decisión CH): misma
+    semántica >= que el objetivo de SNR (AW), distinta de la comparación
+    estricta del RSSI objetivo (decisión C). Complementa a RSSI/SOM/SNR
+    e interferencia; no los reemplaza.
+    """
+    return sinr_db >= thresholds.sinr_target_db
+
+
+def sinr_diagnostic(sinr_db: float, thresholds) -> str:
+    """Diagnóstico complementario de SINR en dos estados (F12).
+
+    No modifica ``rf_diagnostic`` (que sigue describiendo RSSI/SNR en
+    cuatro cuadrantes, con sus 4 salidas congeladas): añade una
+    etiqueta de una sola dimensión para la línea de diagnóstico:
+
+        SINR adecuado  si SINR >= umbral
+        SINR bajo      si SINR <  umbral
+
+    Args:
+        sinr_db: SINR en dB.
+        thresholds: CoverageThresholds (sinr_target_db).
+
+    Returns:
+        "SINR adecuado" o "SINR bajo".
+    """
+    return "SINR adecuado" if meets_sinr_target(sinr_db, thresholds) else "SINR bajo"
+
+
 def rf_diagnostic(rx_power_dbm: float, snr_db: float, thresholds) -> str:
     """Diagnóstico RF básico en cuatro cuadrantes (F7, decisión BC).
 

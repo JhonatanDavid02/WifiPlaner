@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from core.project import CoverageThresholds
 from core.result import LinkEvaluation, SimulationResult
+from engine.sinr import sinr_stats_block
 
 
 def _better(a: LinkEvaluation, b: LinkEvaluation) -> bool:
@@ -124,6 +125,9 @@ def _merged_stats(
     sample_snr_target = results[0].stats.get(
         "snr_target_db", CoverageThresholds().snr_target_db
     )
+    sample_sinr_target = results[0].stats.get(
+        "sinr_target_db", CoverageThresholds().sinr_target_db
+    )
     total = len(evaluations)
 
     quality_percent = {
@@ -164,4 +168,7 @@ def _merged_stats(
         "snr_ratio": round(snr_meets_count / total, 4),
         "ap_dominance_counts": dominance_counts,
         "ap_dominance_percent": dominance_percent,
+        # Fase 12: SINR del ganador por punto (mismo criterio que SNR:
+        # nunca se promedia entre APs; bloque definido en engine.sinr).
+        **sinr_stats_block(evaluations, sample_sinr_target),
     }

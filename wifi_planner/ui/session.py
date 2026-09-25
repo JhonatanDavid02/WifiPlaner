@@ -33,7 +33,7 @@ from core.wall import (
     Opening,
     Wall,
 )
-from engine.classifier import rf_diagnostic
+from engine.classifier import rf_diagnostic, sinr_diagnostic
 from engine.combine import combine_results
 from engine.coverage_grid import CoverageGrid
 from engine.interference import (
@@ -42,13 +42,19 @@ from engine.interference import (
     interference_summary,
 )
 from engine.simulator import simulate_coverage
+from engine.sinr import annotate_sinr, sinr_stats_block
 from persistence import EditorState
 from persistence import load_project as _load_document
 from persistence import save_project as _save_document
 # Registro único de métricas del heatmap (F7: rssi/snr; F11 añade
-# «interference» — decisión CC: el enum HeatmapMetric está congelado
-# por contrato F7, así que la validación usa el registro del renderer).
-from ui.coverage_renderer import HEATMAP_METRIC_INTERFERENCE, HEATMAP_METRICS
+# «interference» — decisión CC; F12 añade «sinr» — decisión CH: el enum
+# HeatmapMetric está congelado por contrato F7, así que la validación
+# usa el registro del renderer).
+from ui.coverage_renderer import (
+    HEATMAP_METRIC_INTERFERENCE,
+    HEATMAP_METRIC_SINR,
+    HEATMAP_METRICS,
+)
 
 # Selector de heatmap: todos los APs (cobertura combinada, Fase 5).
 HEATMAP_ALL_APS = "__all__"
@@ -338,13 +344,17 @@ class EditorSession:
         rssi_target_dbm: float,
         wifi_standard: str,
         channel_width_mhz: int,
+        sinr_target_db: float | None = None,
     ) -> None:
-        """Configuración RF global (Fase 7): ruido, umbrales, estándar, ancho.
+        """Configuración RF global (Fase 7 + 12): ruido, umbrales, estándar, ancho.
 
         Atómico: radio y thresholds se construyen con ``replace`` ANTES de
         tocar el proyecto; si la validación falla (``ValueError``), nada
         cambia. Después se sincroniza la radio de los APs existentes
         (F7 sin configuración por AP) y se invalida el heatmap.
+
+        ``sinr_target_db`` (F12) es opcional: ``None`` conserva el
+        objetivo actual (compatibilidad con los llamadores F7).
         """
         radio = replace(
             self.project.radio,
@@ -352,11 +362,13 @@ class EditorSession:
             channel_width_mhz=int(channel_width_mhz),
             wifi_standard=str(wifi_standard),
         )
-        thresholds = replace(
-            self.project.thresholds,
-            rssi_target_dbm=float(rssi_target_dbm),
-            snr_target_db=float(snr_target_db),
-        )
+        threshold_updates: dict = {
+            "rssi_target_dbm": float(rssi_target_dbm),
+            "snr_target_db": float(snr_target_db),
+        }
+        if sinr_target_db is not None:
+            threshold_updates["sinr_target_db"] = float(sinr_target_db)
+        thresholds = replace(self.project.thresholds, **threshold_updates)
         # Hasta aquí solo se validó: ahora la mutación es segura.
         self.project.radio = radio
         self.project.thresholds = thresholds
@@ -473,12 +485,12 @@ class EditorSession:
             self.invalidate_heatmap()
 
     def set_heatmap_metric(self, metric: str) -> None:
-        """Métrica visual del heatmap: ``rssi``, ``snr`` o ``interference``.
+        """Métrica visual del heatmap: ``rssi``, ``snr``, ``interference`` o ``sinr``.
 
         Es una vista: invalida el heatmap (los píxeles a pintar cambian)
-        pero NO marca ``dirty`` ni se persiste (decisión BA). La métrica
-        de interferencia (F11, decisión CC) se añade al registro del
-        renderer sin tocar el enum congelado de F7.
+        pero NO marca ``dirty`` ni se persiste (decisión BA). Las
+        métricas de interferencia (F11, CC) y SINR (F12, CH) se añaden
+        al registro del renderer sin tocar el enum congelado de F7.
         """
         if metric not in HEATMAP_METRICS:
             raise ValueError(
@@ -564,6 +576,28 @@ class EditorSession:
                 emissions[ap.id] = emission
         return emissions
 
+    def _ap_evaluations(self, ap_id: str) -> list:
+        """Evaluaciones anotadas disponibles para ``ap_id`` (patrón F11).
+
+        Prioriza la última simulación puntual si es de ese AP; si no,
+        las evaluaciones de ese AP en el heatmap combinado. Vacío si
+        aún no hay corrida que lo incluya. Sin importar la métrica
+        visible: los datos del panel no dependen de la vista (CC).
+        """
+        if (
+            self.last_simulation is not None
+            and self.last_simulation.evaluations
+            and self.last_simulation.evaluations[0].access_point_id == ap_id
+        ):
+            return list(self.last_simulation.evaluations)
+        if self.last_heatmap is not None:
+            return [
+                e
+                for e in self.last_heatmap.evaluations
+                if e.access_point_id == ap_id
+            ]
+        return []
+
     def ap_interference_lines(self, ap_id: str) -> list[str]:
         """Líneas de interferencia del AP para el panel (F11, decisión CC).
 
@@ -583,19 +617,7 @@ class EditorSession:
             return ["Interferencia: — (AP sin canal)"]
         if not self._interference_context_aps(ap, self.band_id):
             return ["Interferencia: 0 APs (sin espectro compartido)"]
-        evaluations: list = []
-        if (
-            self.last_simulation is not None
-            and self.last_simulation.evaluations
-            and self.last_simulation.evaluations[0].access_point_id == ap_id
-        ):
-            evaluations = list(self.last_simulation.evaluations)
-        elif self.last_heatmap is not None:
-            evaluations = [
-                e
-                for e in self.last_heatmap.evaluations
-                if e.access_point_id == ap_id
-            ]
+        evaluations = self._ap_evaluations(ap_id)
         summary = interference_summary(evaluations)
         if summary is None or summary.evaluated_points == 0:
             return ["Interferencia: — (sin datos de corrida)"]
@@ -609,6 +631,42 @@ class EditorSession:
             if summary.dominant_interferer_ap_id:
                 lines.append(f"Dominante: {summary.dominant_interferer_ap_id}")
         return lines
+
+    def ap_sinr_lines(self, ap_id: str) -> list[str]:
+        """Líneas de SINR del AP para el panel (F12, decisión CH).
+
+        Diagnóstico complementario de la interferencia de F11: NO
+        sustituye las líneas de RSSI/SNR/interferencia; las complementa
+        con la relación señal/(ruido+I). Solo datos reales:
+
+        - AP desconocido ⇒ vacío (patrón de las demás líneas de panel).
+        - Sin corrida que lo anote ⇒ «sin datos».
+        - Con datos ⇒ mínimo/máximo/promedio y cumplimiento del
+          objetivo ``sinr_target_db`` (mismo formato que el bloque
+          ``SINR (dB)`` de las estadísticas).
+        """
+        ap = next(
+            (a for a in self.project.access_points if a.id == ap_id), None
+        )
+        if ap is None:
+            return []
+        evaluations = self._ap_evaluations(ap_id)
+        stats = sinr_stats_block(
+            evaluations, self.project.thresholds.sinr_target_db
+        )
+        if not stats:
+            return ["SINR: — (sin datos de corrida)"]
+        return [
+            "SINR (dB):",
+            f"  mínimo: {stats['sinr_min_db']:.2f} dB",
+            f"  máximo: {stats['sinr_max_db']:.2f} dB",
+            f"  promedio: {stats['sinr_avg_db']:.2f} dB",
+            (
+                f"  ≥ objetivo {stats['sinr_target_db']:g} dB: "
+                f"{100.0 * stats['sinr_ratio']:.1f}% "
+                f"({stats['points_meeting_sinr_target']})"
+            ),
+        ]
 
     def run_heatmap(self, band_id: str | None = None) -> SimulationResult:
         """Simula el CoverageGrid con las paredes reales.
@@ -682,11 +740,17 @@ class EditorSession:
         # Fase 11: anota interferencia en cada evaluación (reutiliza
         # los P_rx ya calculados; decide BX). Sin resultados o con un
         # solo AP no hay contexto posible ⇒ se omite.
+        # Fase 12: después de la interferencia (F11) se anota el SINR
+        # (decisión CF) y ANTES de combinar (F5), de modo que la
+        # evaluación ganadora por RSSI transporta su propio SINR. Con
+        # un solo resultado no se anota aquí: evaluate_link ya entregó
+        # SINR = SNR exactamente (decisión CG).
         if len(results) >= 2:
             emissions = self._spectral_emissions(
                 list(aps) + context, band_id
             )
             results = annotate_interference(results, emissions)
+            results = annotate_sinr(results, self.project.thresholds)
 
         result = results[0] if len(aps) == 1 else combine_results(results)
         self.last_heatmap = result
@@ -732,6 +796,12 @@ class EditorSession:
                     f"Interferencia agregada máx: {summary.interference_max_dbm:g} dBm\n"
                     f"APs interferentes (máx): {summary.interferer_count_max}\n"
                 )
+        elif self.heatmap_metric == HEATMAP_METRIC_SINR:
+            # Fase 12 (decisión CH): métrica paralela fuera del enum.
+            header += (
+                f"Métrica: SINR (dB)\n"
+                f"SINR objetivo: {self.project.thresholds.sinr_target_db:g} dB\n"
+            )
         header += "\n"
         return header + stats_text(self.last_heatmap)
 
@@ -757,7 +827,7 @@ class EditorSession:
             diagnostic = rf_diagnostic(
                 ev.rx_power_dbm, ev.snr_db, self.project.thresholds
             )
-            lines.append(
+            line = (
                 f"{client.id}: AP {ev.access_point_id} | "
                 f"{ev.distance_m:.2f} m | "
                 f"RSSI {ev.rx_power_dbm:.1f} dBm | "
@@ -765,6 +835,14 @@ class EditorSession:
                 f"SNR {ev.snr_db:.1f} dB | {ev.quality.value} | "
                 f"{diagnostic}"
             )
+            # F12: diagnóstico complementario de SINR (no sustituye a
+            # RSSI/SNR/interferencia; solo añade esta relación).
+            if ev.sinr_db is not None:
+                line += (
+                    f" | SINR {ev.sinr_db:.1f} dB "
+                    f"({sinr_diagnostic(ev.sinr_db, self.project.thresholds)})"
+                )
+            lines.append(line)
         return lines
 
     # ------------------------------------------------------------------
@@ -1409,7 +1487,10 @@ class EditorSession:
                         )
                     )
                 emissions = self._spectral_emissions([ap] + context, band_id)
-                result = annotate_interference(results, emissions)[0]
+                results = annotate_interference(results, emissions)
+                # F12: SINR con la interferencia ya anotada (decisión CF);
+                # nos quedamos con el AP deseado (results[0]).
+                result = annotate_sinr(results, self.project.thresholds)[0]
         self.last_simulation = result
         return result
 
@@ -1427,10 +1508,11 @@ class EditorSession:
 
         rx_values = [e.rx_power_dbm for e in evaluations]
         snr_values = [e.snr_db for e in evaluations]
+        sinr_values = [e.sinr_db for e in evaluations if e.sinr_db is not None]
         ap_id = evaluations[0].access_point_id
         band = self.project.get_band(result.band_id)
         wall_count = len(self.floor.walls)
-        return (
+        text = (
             f"AP: {ap_id}\n"
             f"Banda: {band.name}\n"
             f"Paredes: {wall_count}\n"
@@ -1441,3 +1523,10 @@ class EditorSession:
             f"SNR mínimo: {min(snr_values):.2f} dB\n"
             f"SNR máximo: {max(snr_values):.2f} dB"
         )
+        # Fase 12: capa paralela de SINR (solo si la corrida la anotó).
+        if sinr_values:
+            text += (
+                f"\nSINR mínimo: {min(sinr_values):.2f} dB"
+                f"\nSINR máximo: {max(sinr_values):.2f} dB"
+            )
+        return text

@@ -12,9 +12,15 @@ from ui.session import HEATMAP_ALL_APS, Tool
 BAND_LABEL_BY_ID = {"band_2_4": "2.4 GHz", "band_5": "5 GHz", "band_6": "6 GHz"}
 BAND_ID_BY_LABEL = {label: band_id for band_id, label in BAND_LABEL_BY_ID.items()}
 
-# Etiquetas visibles ↔ métricas del heatmap (Fase 7 + Fase 11: la
-# métrica de interferencia vive en el registro del renderer, decisión CC).
-METRIC_LABEL_BY_ID = {"rssi": "RSSI", "snr": "SNR", "interference": "Interferencia"}
+# Etiquetas visibles ↔ métricas del heatmap (Fase 7 + Fase 11 + Fase
+# 12: interferencia y SINR viven en el registro del renderer, decisiones
+# CC y CH; el enum HeatmapMetric sigue congelado en F7).
+METRIC_LABEL_BY_ID = {
+    "rssi": "RSSI",
+    "snr": "SNR",
+    "interference": "Interferencia",
+    "sinr": "SINR",
+}
 METRIC_ID_BY_LABEL = {label: metric_id for metric_id, label in METRIC_LABEL_BY_ID.items()}
 
 

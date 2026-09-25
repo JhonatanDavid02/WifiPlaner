@@ -366,7 +366,7 @@ class WifiPlannerApp(tk.Tk):
         self._schedule_heatmap()
 
     def _on_rf_settings(self) -> None:
-        """Diálogo de configuración RF global (Fase 7)."""
+        """Diálogo de configuración RF global (Fase 7 + Fase 12)."""
         radio = self.session.project.radio
         thresholds = self.session.project.thresholds
 
@@ -376,6 +376,7 @@ class WifiPlannerApp(tk.Tk):
             rssi_target_dbm: float,
             wifi_standard: str,
             channel_width_mhz: int,
+            sinr_target_db: float,
         ) -> None:
             try:
                 self.session.apply_rf_settings(
@@ -384,6 +385,7 @@ class WifiPlannerApp(tk.Tk):
                     rssi_target_dbm=rssi_target_dbm,
                     wifi_standard=wifi_standard,
                     channel_width_mhz=channel_width_mhz,
+                    sinr_target_db=sinr_target_db,
                 )
             except ValueError as exc:
                 messagebox.showerror("Configuración RF", str(exc), parent=self)
@@ -399,6 +401,7 @@ class WifiPlannerApp(tk.Tk):
             rssi_target_dbm=thresholds.rssi_target_dbm,
             wifi_standard=radio.wifi_standard,
             channel_width_mhz=radio.channel_width_mhz,
+            sinr_target_db=thresholds.sinr_target_db,
             on_apply=apply,
         )
 

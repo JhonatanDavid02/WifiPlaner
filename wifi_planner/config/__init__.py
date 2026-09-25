@@ -79,6 +79,8 @@ def _parse_thresholds(data: dict) -> CoverageThresholds:
         regular_min_dbm=float(data.get("regular_min_dbm", defaults.regular_min_dbm)),
         weak_min_dbm=float(data.get("weak_min_dbm", defaults.weak_min_dbm)),
         snr_target_db=float(data.get("snr_target_db", defaults.snr_target_db)),
+        # Fase 12: ausente en YAMLs antiguos ⇒ default centralizado.
+        sinr_target_db=float(data.get("sinr_target_db", defaults.sinr_target_db)),
     )
 
 

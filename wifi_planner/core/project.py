@@ -30,6 +30,19 @@ DEFAULT_SNR_TARGET_DB = 25.0
 SNR_TARGET_MIN_DB = -20.0
 SNR_TARGET_MAX_DB = 60.0
 
+# Objetivo de SINR por defecto (dB, Fase 12). Valor de referencia de
+# diseño; NO es una verdad universal (decisión CH en docs/decisions.md).
+# Igual al objetivo de SNR (25 dB) para mantener la coherencia: como
+# SINR <= SNR siempre (el denominador incluye el ruido), cumplir el
+# objetivo de SINR implica cumplir el de SNR, y SINR sin interferencia
+# modelada es exactamente SNR (ambos umbrales se cumplen juntos).
+DEFAULT_SINR_TARGET_DB = 25.0
+
+# Rango aceptado para el objetivo de SINR (dB). Mismo intervalo que el
+# objetivo de SNR: SINR es la misma relación con un denominador >= ruido.
+SINR_TARGET_MIN_DB = -20.0
+SINR_TARGET_MAX_DB = 60.0
+
 
 @dataclass(frozen=True)
 class CoverageThresholds:
@@ -50,6 +63,10 @@ class CoverageThresholds:
         snr_target_db: Objetivo de SNR en dB (F7). Comparación SNR >= umbral.
             Rango: [-20, 60] dB. No reemplaza al RSSI objetivo: son
             conceptos distintos (potencia vs relación señal/ruido).
+        sinr_target_db: Objetivo de SINR en dB (F12). Comparación
+            SINR >= umbral (misma semántica >= que el SNR, decisión CH).
+            Rango: [-20, 60] dB. No reemplaza a SNR/interferencia: es
+            el umbral de la relación señal/(ruido+interferencia).
     """
 
     rssi_target_dbm: float = -67.0
@@ -60,9 +77,10 @@ class CoverageThresholds:
     regular_min_dbm: float = -75.0
     weak_min_dbm: float = -85.0
     snr_target_db: float = DEFAULT_SNR_TARGET_DB
+    sinr_target_db: float = DEFAULT_SINR_TARGET_DB
 
     def __post_init__(self) -> None:
-        for name in ("rssi_target_dbm", "snr_target_db"):
+        for name in ("rssi_target_dbm", "snr_target_db", "sinr_target_db"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 raise ValueError(
@@ -78,6 +96,12 @@ class CoverageThresholds:
                 "CoverageThresholds.snr_target_db debe estar en "
                 f"[{SNR_TARGET_MIN_DB:g}, {SNR_TARGET_MAX_DB:g}] dB "
                 f"(got {self.snr_target_db:g})."
+            )
+        if not (SINR_TARGET_MIN_DB <= self.sinr_target_db <= SINR_TARGET_MAX_DB):
+            raise ValueError(
+                "CoverageThresholds.sinr_target_db debe estar en "
+                f"[{SINR_TARGET_MIN_DB:g}, {SINR_TARGET_MAX_DB:g}] dB "
+                f"(got {self.sinr_target_db:g})."
             )
 
 

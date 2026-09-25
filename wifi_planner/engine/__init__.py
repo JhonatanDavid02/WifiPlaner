@@ -39,8 +39,16 @@ from engine.classifier import (
     classify_quality,
     meets_rssi_target,
     meets_snr_target,
+    meets_sinr_target,
     rf_diagnostic,
+    sinr_diagnostic,
     classify_som,
+)
+from engine.sinr import (
+    annotate_sinr,
+    interference_plus_noise_dbm,
+    signal_to_interference_noise_ratio,
+    sinr_stats_block,
 )
 from engine.coverage_grid import CoverageGrid, MAX_GRID_POINTS, MIN_RESOLUTION_M
 from engine.simulator import simulate_coverage
@@ -84,8 +92,14 @@ __all__ = [
     "classify_quality",
     "meets_rssi_target",
     "meets_snr_target",
+    "meets_sinr_target",
     "rf_diagnostic",
+    "sinr_diagnostic",
     "classify_som",
+    "annotate_sinr",
+    "interference_plus_noise_dbm",
+    "signal_to_interference_noise_ratio",
+    "sinr_stats_block",
     "CoverageGrid",
     "MAX_GRID_POINTS",
     "MIN_RESOLUTION_M",

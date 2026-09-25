@@ -621,10 +621,17 @@ def test_heatmap_metric_enum_remains_frozen_f7():
 
 
 def test_heatmap_metrics_registry_includes_interference():
-    from ui.coverage_renderer import HEATMAP_METRICS, HEATMAP_METRIC_INTERFERENCE
+    from ui.coverage_renderer import (
+        HEATMAP_METRICS,
+        HEATMAP_METRIC_INTERFERENCE,
+        HEATMAP_METRIC_SINR,
+    )
 
     assert HEATMAP_METRIC_INTERFERENCE == "interference"
-    assert HEATMAP_METRICS == ("rssi", "snr", "interference")
+    assert HEATMAP_METRIC_SINR == "sinr"
+    # Supersede F12 (decisión CD): F11 congelaba exactamente 3 métricas;
+    # F12 añade la capa paralela "sinr" al registro.
+    assert HEATMAP_METRICS == ("rssi", "snr", "interference", "sinr")
 
 
 def test_set_heatmap_metric_accepts_interference(session):
@@ -760,14 +767,23 @@ def test_toolbar_metric_label_registry():
 
 
 # ===========================================================================
-# K. Fronteras: sin SINR (F12) y persistencia sin cambios (CD)
+# K. Fronteras: SINR F12 (supersede CD) y persistencia sin cambios (CD)
 # ===========================================================================
 
-def test_no_sinr_field_or_calculation():
+def test_sinr_fields_present_and_equal_snr_without_interference():
+    """Supersede F12 (decisión CD): F11 congelaba «sin SINR».
+
+    Contrato F12: los campos nuevos existen en LinkEvaluation, con
+    interferencia no modelada el SINR es EXACTAMENTE el SNR (decisión
+    CG) y el nombre corto «sinr» (sin sufijo) sigue sin ser campo.
+    """
     names = {f.name for f in dataclasses.fields(LinkEvaluation)}
     assert "sinr" not in names
-    assert "sinr_db" not in names
+    assert "sinr_db" in names
+    assert "sinr_meets_target" in names
     ev = _simulate(_ap("AP-001", 36)).evaluations[0]
+    assert ev.sinr_db is not None
+    assert ev.sinr_db == ev.snr_db  # SINR = SNR sin interferencia (CG)
     assert not hasattr(ev, "sinr")
 
 

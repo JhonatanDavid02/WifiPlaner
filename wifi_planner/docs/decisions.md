@@ -1201,6 +1201,83 @@ escala + leyenda + rama de pintado), `ui/panels/toolbar.py` (etiqueta),
 
 ---
 
+## Fase 12 — SINR + diagnóstico RF
+
+### Decisión CF — SINR como capa paralela con fórmula única y estable en `engine/sinr.py`
+
+- **Decisión:** la fórmula
+  `SINR = P_rx − 10·log10(10^(NoiseFloor/10) + 10^(I/10))` vive en
+  **un solo sitio** (`engine/sinr.py::signal_to_interference_noise_ratio`,
+  espejo del naming de `signal_to_noise_ratio`); nadie la replica. La
+  suma ruido+I usa la forma estable basada en el máximo
+  (`D + 10·log10(1 + 10^((min−D)/10))`, exponente ≤ 0 ⇒ sin overflow,
+  sin división por cero, underflow benigno) y rechaza valores no
+  finitos con `ValueError`. La sesión anota **después** de
+  `annotate_interference` (F11) y **antes** de `combine_results` (F5),
+  de modo que la evaluación ganadora por RSSI transporta su propio
+  SINR. El bloque de estadísticas (`sinr_stats_block`) también es único
+  y lo consumen simulador, combinador, panel y UI.
+- **Razón:** decisiones CA/CG exigían dominio lineal y una definición
+  canónica reemplazable; el orden de anotación es el único coherente
+  (no existen I antes de F11 ni un ganador antes de F5). Combinar
+  sigue siendo MAX RSSI: SINR jamás elige ganadores.
+
+### Decisión CG — Sin interferencia modelada ⇒ SINR = SNR exactamente
+
+- **Decisión:** `interference_dbm = None` ⇒ el denominador es el piso
+  de ruido y el retorno es `round(P_rx − N, 2)`, **idéntico bit a bit**
+  al SNR (misma aritmética redondeada). Vale para proyectos F1–F10,
+  AP sin canal, canales sin solapamiento, un solo AP y corridas sin
+  contexto; `evaluate_link` rellena `sinr_db` en todos los cases y la
+  UI tolera la ausencia de claves `sinr_*` en resultados sintéticos
+  antiguos (presencia, no igualdad, es el contrato — patrón F7/F11).
+- **Razón:** cualquier otro comportamiento inventaría precisión donde
+  el modelo no la tiene y rompería la coherencia SNR/SINR (§14 de
+  `docs/formulas.md`). `sinr_db = None` solo existe en constructores
+  manuales; la pintura de la métrica `sinr` los muestra en gris neutro.
+
+### Decisión CH — Umbral `sinr_target_db`: comparación `>=`, default 25 dB, diálogo incluido
+
+- **Decisión:** `CoverageThresholds.sinr_target_db` (default
+  `DEFAULT_SINR_TARGET_DB = 25.0`, rango [-20, 60] dB validado en
+  `__post_init__`) con comparación **`>=`** (`meets_sinr_target`,
+  igual que el SNR de AW) y diagnóstico propio de dos estados
+  (`sinr_diagnostic`: «SINR adecuado»/«SINR bajo») que **no** toca las
+  4 salidas congeladas de `rf_diagnostic`. Se expone en el diálogo
+  «Config RF…» (`sinr_target_db` como 6.º elemento del callback y kwarg
+  opcional de `apply_rf_settings`: `None` conserva el actual). En
+  schema v1 la clave se **escribe siempre** y se **lee opcional**
+  (patrón AZ; los archivos F1–F11 abren con default 25.0); los
+  resultados derivados (`sinr_db`, `sinr_meets_target`, `sinr_ratio`)
+  **nunca** se escriben en el JSON.
+- **Razón:** 25 dB = objetivo de SNR de F7; como SINR ≤ SNR siempre
+  (el denominador incluye el ruido), cumplir SINR(25) ⇒ SNR(25), y sin
+  interferencia ambos umbrales se cumplen o fallan juntos. El diálogo
+  es la única superficie donde ya se editan los umbrales RF; no
+  duplicarla evita una segunda fuente de verdad.
+
+### Decisión CI — Supersede de la frontera F11 (CD) solo en sus 2 tests congelados
+
+- **Decisión (aprobada por el usuario):** F12 reescribe **exactamente
+  dos** tests frontera de F11, supersediendo parcialmente CD:
+  `test_no_sinr_field_or_calculation` →
+  `test_sinr_fields_present_and_equal_snr_without_interference` (los
+  campos existen, SINR = SNR sin I, el nombre corto `sinr` sin sufijo
+  sigue sin existir) y
+  `test_heatmap_metrics_registry_includes_interference` (el registro
+  pasa a `("rssi","snr","interference","sinr")`; el **enum** de F7
+  sigue congelado en `{"rssi","snr"}` y `audit_f11.py` queda
+  superseded por `audit_f12.py`, igual que `audit_f10` lo quedó por
+  `audit_f11` — decisión CD ya documentaba ese precedente).
+  Los otros 636 tests de F1–F11 quedan intactos.
+- **Razón:** el spec de F12 exige esos campos y esa métrica; los dos
+  tests existían precisamente para congelar la ausencia que F12
+  levanta. Reescribirlos conservando su espíritu (frontera explícita)
+  es preferible a borrarlos, y limitarlo a dos preserva el resto del
+  contrato histórico byte a byte.
+
+---
+
 ## Discrepancias encontradas (no resueltas silenciosamente)
 
 ### 1. Distancias `d_max` contradictorias

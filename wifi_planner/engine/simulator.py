@@ -22,6 +22,7 @@ from core.radio import allowed_channel_widths_mhz
 from core.result import LinkEvaluation, ObstacleLoss, SimulationResult
 from core.wall import Opening, Wall
 from engine.link_budget import evaluate_link
+from engine.sinr import sinr_stats_block
 from engine.obstacles import obstacle_loss_for_crossings, trace_to_obstacle_loss, trace_walls
 
 
@@ -204,4 +205,7 @@ def _compute_stats(evaluations: list[LinkEvaluation], project) -> dict:
         "snr_target_db": snr_target,
         "points_meeting_snr_target": snr_meets_count,
         "snr_ratio": round(snr_meets_count / total, 4),
+        # Fase 12: estadísticas de SINR (capa paralela; un solo bloque
+        # definido en engine.sinr, decisión CG).
+        **sinr_stats_block(evaluations, project.thresholds.sinr_target_db),
     }

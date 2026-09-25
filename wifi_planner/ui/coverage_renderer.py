@@ -66,12 +66,21 @@ _INTERFERENCE_STOPS: tuple[tuple[float, tuple[int, int, int]], ...] = (
     (-30.0, (140, 50, 90)),     # morado apagado: extrema
 )
 
+# Fase 12: escala visual de SINR (dB, decisión CH). MISMA dirección que
+# SNR (mayor = mejor) y alias de _SNR_STOPS: SINR comparte la relación
+# señal/denominador con SNR, solo cambia el denominador (ruido + I).
+# Solo presentación; los umbrales RF siguen en CoverageThresholds.
+_SINR_SCALE_MIN = _SNR_SCALE_MIN
+_SINR_SCALE_MAX = _SNR_SCALE_MAX
+_SINR_STOPS = _SNR_STOPS
+
 # Métricas soportadas por el render (vista; la validación es aquí y en
 # la sesión, nunca en el engine). El enum HeatmapMetric de F7 queda
-# congelado por contrato; «interference» se añade SOLO a este registro
-# (Fase 11, decisión CC).
+# congelado por contrato; «interference» (F11) y «sinr» (F12) se añaden
+# SOLO a este registro (decisiones CC y CG).
 HEATMAP_METRIC_INTERFERENCE = "interference"
-HEATMAP_METRICS = ("rssi", "snr", HEATMAP_METRIC_INTERFERENCE)
+HEATMAP_METRIC_SINR = "sinr"
+HEATMAP_METRICS = ("rssi", "snr", HEATMAP_METRIC_INTERFERENCE, HEATMAP_METRIC_SINR)
 
 
 def _lerp_color(rssi_a: float, rgb_a, rssi_b: float, rgb_b: float, rssi: float) -> tuple[int, int, int]:
@@ -156,6 +165,27 @@ def interference_to_color(
     return (r, g, b, a)
 
 
+def sinr_to_rgb(sinr_db: float | None) -> tuple[int, int, int]:
+    """SINR (dB) → color RGB (Fase 12, escala 0–45 dB igual que SNR).
+
+    Dirección normal (mayor = mejor, decisión CH); NO usa la escala
+    invertida de interferencia. ``None`` = SINR no anotado (resultado
+    sintético manual) ⇒ gris neutro «sin datos». Solo presentación.
+    """
+    if sinr_db is None:
+        return (150, 150, 150)
+    return _stops_to_rgb(sinr_db, _SINR_SCALE_MIN, _SINR_SCALE_MAX, _SINR_STOPS)
+
+
+def sinr_to_color(
+    sinr_db: float | None, alpha: int = DEFAULT_HEATMAP_ALPHA
+) -> tuple[int, int, int, int]:
+    """SINR (dB o None) → RGBA para la imagen del heatmap."""
+    r, g, b = sinr_to_rgb(sinr_db)
+    a = max(0, min(255, int(alpha)))
+    return (r, g, b, a)
+
+
 def quality_color(quality: QualityClass) -> tuple[int, int, int]:
     """Color de la leyenda para una clase de calidad (más plano)."""
     mapping = {
@@ -169,13 +199,15 @@ def quality_color(quality: QualityClass) -> tuple[int, int, int]:
 
 
 def legend_title(metric: str = "rssi") -> str:
-    """Título de la leyenda según la métrica visible (Fase 7 + 11)."""
+    """Título de la leyenda según la métrica visible (Fase 7, 11 y 12)."""
     if metric == "snr":
         return "SNR (dB)"
     if metric == "rssi":
         return "Cobertura Wi-Fi"
     if metric == HEATMAP_METRIC_INTERFERENCE:
         return "Interferencia (dBm)"
+    if metric == HEATMAP_METRIC_SINR:
+        return "SINR (dB)"
     raise ValueError(f"Métrica no soportada: {metric!r}")
 
 
@@ -189,12 +221,28 @@ def legend_rows(thresholds: CoverageThresholds, metric: str = "rssi") -> list[di
     - ``snr``: 2 filas semánticas frente a ``snr_target_db`` (Fase 7).
     - ``interference``: bandas visuales de la escala F11 (paradas de
       ``_INTERFERENCE_STOPS``; NO son umbrales RF — decisión CC).
+    - ``sinr``: 2 filas semánticas frente a ``sinr_target_db`` (Fase
+      12, mismo patrón que SNR — decisión CH).
     """
     if metric == "snr":
         target = thresholds.snr_target_db
         return [
             {
                 "label": "SNR objetivo",
+                "color": (80, 200, 120),
+                "range": f"≥ {target:g} dB",
+            },
+            {
+                "label": "Por debajo",
+                "color": (120, 70, 90),
+                "range": f"< {target:g} dB",
+            },
+        ]
+    if metric == HEATMAP_METRIC_SINR:
+        target = thresholds.sinr_target_db
+        return [
+            {
+                "label": "SINR objetivo",
                 "color": (80, 200, 120),
                 "range": f"≥ {target:g} dB",
             },
@@ -281,9 +329,9 @@ def build_heatmap_image(
     indicado por el llamador.
 
     Args:
-        metric: ``"rssi"`` (default, Fase 4/5), ``"snr"`` (Fase 7) o
-            ``"interference"`` (Fase 11); decide qué valor de cada
-            evaluación se colorea.
+        metric: ``"rssi"`` (default, Fase 4/5), ``"snr"`` (Fase 7),
+            ``"interference"`` (Fase 11) o ``"sinr"`` (Fase 12); decide
+            qué valor de cada evaluación se colorea.
 
     Returns:
         Imagen RGBA del tamaño del rect del piso en píxeles, o None si
@@ -314,6 +362,8 @@ def build_heatmap_image(
         color_fn = snr_to_color
     elif metric == HEATMAP_METRIC_INTERFERENCE:
         color_fn = interference_to_color
+    elif metric == HEATMAP_METRIC_SINR:
+        color_fn = sinr_to_color
     else:
         color_fn = rssi_to_color
     for ev in evaluations:
@@ -325,6 +375,9 @@ def build_heatmap_image(
         elif metric == HEATMAP_METRIC_INTERFERENCE:
             # None ⇒ sin contribuidores (color de «sin interferencia»).
             value = ev.interference_dbm
+        elif metric == HEATMAP_METRIC_SINR:
+            # None ⇒ SINR no anotado (gris «sin datos», decisión CG).
+            value = getattr(ev, "sinr_db", None)
         else:
             value = ev.rx_power_dbm
         color = color_fn(value, alpha=alpha)
@@ -396,6 +449,24 @@ def stats_text(result: SimulationResult) -> str:
                     f"  ≥ objetivo {stats.get('snr_target_db', 0):g} dB: "
                     f"{100.0 * stats.get('snr_ratio', 0.0):.1f}% "
                     f"({int(stats.get('points_meeting_snr_target', 0))})"
+                ),
+            ]
+        )
+
+    # Fase 12: bloque SINR (capa paralela; presencia condicional, mismo
+    # patrón que SNR — los resultados sintéticos antiguos no lo traen).
+    if "sinr_min_db" in stats:
+        lines.extend(
+            [
+                "",
+                "SINR (dB):",
+                f"  mínimo: {stats['sinr_min_db']:.2f} dB",
+                f"  máximo: {stats['sinr_max_db']:.2f} dB",
+                f"  promedio: {stats['sinr_avg_db']:.2f} dB",
+                (
+                    f"  ≥ objetivo {stats.get('sinr_target_db', 0):g} dB: "
+                    f"{100.0 * stats.get('sinr_ratio', 0.0):.1f}% "
+                    f"({int(stats.get('points_meeting_sinr_target', 0))})"
                 ),
             ]
         )

@@ -31,6 +31,9 @@ thresholds:
   regular_min_dbm: -75.0      # P_rx >= -75 => Regular
   weak_min_dbm: -85.0         # P_rx >= -85 => Debil (si no, sin cobertura)
   snr_target_db: 25.0         # Objetivo de SNR (dB, Fase 7): SNR >= umbral
+  sinr_target_db: 25.0        # Objetivo de SINR (dB, Fase 12): SINR >= umbral
+                              # Igual al de SNR: SINR <= SNR siempre, y sin
+                              # interferencia modelada SINR = SNR exactamente
 
 bands:
   - id: "band_2_4"

@@ -82,6 +82,8 @@ from core.obstacle import (
     Obstacle,
 )
 from core.project import (
+    SINR_TARGET_MAX_DB,
+    SINR_TARGET_MIN_DB,
     SNR_TARGET_MAX_DB,
     SNR_TARGET_MIN_DB,
     CoverageThresholds,
@@ -323,6 +325,9 @@ def _thresholds_to_dict(thresholds: CoverageThresholds) -> dict[str, float]:
         "weak_min_dbm": thresholds.weak_min_dbm,
         # Fase 7 (clave opcional al LEER; siempre se escribe):
         "snr_target_db": thresholds.snr_target_db,
+        # Fase 12 (clave opcional al LEER; siempre se escribe):
+        # es CONFIGURACIÓN de umbral, no un resultado derivado (CD).
+        "sinr_target_db": thresholds.sinr_target_db,
     }
 
 
@@ -575,6 +580,19 @@ def _thresholds_from_dict(value: Any, path: str) -> CoverageThresholds:
         )
     else:
         kwargs["snr_target_db"] = CoverageThresholds().snr_target_db
+
+    # Fase 12: campo OPCIONAL (ausente en archivos F1–F11 => default
+    # centralizado, patrón AZ). Los resultados derivados (sinr_db de las
+    # evaluaciones) NO se persisten jamás.
+    if "sinr_target_db" in data:
+        kwargs["sinr_target_db"] = _require_number(
+            data["sinr_target_db"],
+            f"{path}.sinr_target_db",
+            minimum=SINR_TARGET_MIN_DB,
+            maximum=SINR_TARGET_MAX_DB,
+        )
+    else:
+        kwargs["sinr_target_db"] = CoverageThresholds().sinr_target_db
 
     return CoverageThresholds(**kwargs)
 

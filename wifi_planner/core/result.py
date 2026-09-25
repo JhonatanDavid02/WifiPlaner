@@ -80,6 +80,13 @@ class LinkEvaluation:
             en este punto (F11).
         dominant_interferer_ap_id: Interferente dominante en este punto
             (mayor contribución; empate ⇒ menor id — decisión CA).
+        sinr_db: SINR = P_rx − 10·log10(10^(N/10) + 10^(I/10)) en dB
+            (F12, información paralela). None = sin calcular (solo en
+            constructores manuales; evaluate_link siempre lo establece).
+            Con ``interference_dbm = None`` es exactamente ``snr_db``
+            (decisión CG). NO redefine RSSI/SOM/SNR/interferencia.
+        sinr_meets_target: True si SINR >= objetivo de SINR (F12,
+            comparación >= como el SNR — decisión CH).
     """
 
     access_point_id: str
@@ -102,6 +109,9 @@ class LinkEvaluation:
     interference_dbm: float | None = None
     interferer_count: int = 0
     dominant_interferer_ap_id: str | None = None
+    # Fase 12: SINR (información paralela; RSSI/SNR/interferencia intactos).
+    sinr_db: float | None = None
+    sinr_meets_target: bool = False
 
 
 @dataclass(frozen=True)

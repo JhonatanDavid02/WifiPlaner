@@ -465,6 +465,7 @@ class PropertiesPanel(ttk.Frame):
                 f"  Piso de ruido: {radio.noise_floor_dbm:g} dBm\n"
                 f"  Objetivo RSSI: > {thresholds.rssi_target_dbm:g} dBm\n"
                 f"  Objetivo SNR: ≥ {thresholds.snr_target_db:g} dB\n"
+                f"  Objetivo SINR: ≥ {thresholds.sinr_target_db:g} dB\n"
                 f"  Estándar: {radio.wifi_standard}\n"
                 f"  Ancho de canal: {radio.channel_width_mhz:g} MHz",
             )
@@ -505,7 +506,12 @@ class PropertiesPanel(ttk.Frame):
                 # modelo; decisión CC). Se añaden después de las líneas
                 # RF sin tocar su contenido (contrato F10 intacto).
                 interference_lines = session.ap_interference_lines(ap.id)
-                detail = "\n".join(rf_lines + interference_lines)
+                # Fase 12: diagnóstico complementario de SINR (decisión
+                # CH). No sustituye a RSSI/SNR/interferencia.
+                sinr_lines = session.ap_sinr_lines(ap.id)
+                detail = "\n".join(
+                    rf_lines + interference_lines + sinr_lines
+                )
                 self._set_text(
                     self._info,
                     f"Access Point\n\n"

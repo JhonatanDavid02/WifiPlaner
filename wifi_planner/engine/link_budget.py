@@ -28,6 +28,7 @@ from core.geometry import Point2D
 from core.radio import RadioConfiguration
 from core.result import LinkEvaluation, ObstacleLoss, QualityClass, Verdict
 from engine import classifier, propagation
+from engine.sinr import signal_to_interference_noise_ratio
 
 # Piso numérico cuando el receptor coincide con el AP (d = 0).
 # FSPL exige d > 0 (log10 indefinido en 0). No es física: es un límite
@@ -148,8 +149,9 @@ def evaluate_link(
             lo aporta engine.obstacles.trace_walls.
 
     Returns:
-        LinkEvaluation con distancias, pérdidas, P_rx, SOM, SNR,
-        veredicto y clase de calidad.
+        LinkEvaluation con distancias, pérdidas, P_rx, SOM, SNR, SINR
+        (igual al SNR sin interferencia modelada, F12), veredicto y
+        clase de calidad.
     """
     if obstacle_loss is None:
         obstacle_loss = ObstacleLoss(total_db=0.0, crossings=0)
@@ -173,6 +175,14 @@ def evaluate_link(
     noise_floor = radio.noise_floor_dbm
     snr = signal_to_noise_ratio(budget.rx_power_dbm, noise_floor)
     snr_meets = classifier.meets_snr_target(snr, thresholds)
+    # SINR (Fase 12): en esta capa aún no hay modelo de interferencia,
+    # de modo que SINR = SNR exactamente (decisión CG, sinr_db es la
+    # misma aritmética redondeada). La sesión lo refina después con
+    # engine.sinr.annotate_sinr una vez F11 modeló la interferencia.
+    sinr = signal_to_interference_noise_ratio(
+        budget.rx_power_dbm, noise_floor, None
+    )
+    sinr_meets = classifier.meets_sinr_target(sinr, thresholds)
 
     return LinkEvaluation(
         access_point_id=access_point_id,
@@ -190,4 +200,6 @@ def evaluate_link(
         noise_floor_dbm=noise_floor,
         snr_db=snr,
         snr_meets_target=snr_meets,
+        sinr_db=sinr,
+        sinr_meets_target=sinr_meets,
     )
