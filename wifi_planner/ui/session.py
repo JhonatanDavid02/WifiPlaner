@@ -57,6 +57,7 @@ from ui.coverage_renderer import (
     HEATMAP_METRIC_SINR,
     HEATMAP_METRICS,
 )
+from ui.geometry_view import GeometryView, build_geometry_view
 
 # Selector de heatmap: todos los APs (cobertura combinada, Fase 5).
 HEATMAP_ALL_APS = "__all__"
@@ -180,6 +181,8 @@ class EditorSession:
 
     def __init__(self, project: Project | None = None) -> None:
         self.project = project if project is not None else create_default_project()
+        # Piso activo (Fase 14-C): None = primer piso del proyecto.
+        self.active_floor_id: str | None = None
         self.tool: Tool = Tool.SELECT
         self.selection: Selection | None = None
         # Punto de inicio mientras se dibuja una pared (metros).
@@ -289,6 +292,7 @@ class EditorSession:
         regeneran (decisión AB/AC, docs/decisions.md).
         """
         self.project = project
+        self.active_floor_id = None
         self.project_path = path
         self.tool = Tool.SELECT
         self.selection = None
@@ -312,12 +316,54 @@ class EditorSession:
     # ------------------------------------------------------------------
 
     @property
-    def floor(self) -> Floor:
+    def active_floor(self) -> Floor:
+        """Piso activo; todo el CRUD (walls/spaces/openings/obstacles) opera aquí.
+
+        Si ``active_floor_id`` apunta a un piso ya borrado, se vuelve al
+        primero; si el proyecto no tiene pisos, se crea el contenedor SIN
+        dimensiones (Fase 14-B: nada de 12×8 implícito).
+        """
+        if self.active_floor_id is not None:
+            for candidate in self.project.floors:
+                if candidate.id == self.active_floor_id:
+                    return candidate
+            self.active_floor_id = None
         if not self.project.floors:
-            # Se crea el contenedor SIN dimensiones: el tamaño nunca se
-            # inventa aquí; se pide explícitamente (Fase 14-B).
             self.project.floors.append(Floor(id="FLOOR-001", name="Planta baja"))
         return self.project.floors[0]
+
+    @property
+    def floor(self) -> Floor:
+        """Piso activo (alias de ``active_floor``; compatible con Fases 4–13)."""
+        return self.active_floor
+
+    def set_active_floor(self, floor_id: str) -> None:
+        """Selecciona el piso activo (Fase 14-C).
+
+        Raises:
+            ValueError: si no existe ningún piso con ese id.
+        """
+        target = None
+        for candidate in self.project.floors:
+            if candidate.id == floor_id:
+                target = candidate
+                break
+        if target is None:
+            raise ValueError(f"Piso desconocido: {floor_id!r}")
+        # Mismo piso (aunque active_floor_id aún normalizara a None): no-op.
+        if self.active_floor is not target:
+            self.active_floor_id = floor_id
+            # El heatmap pertenece al piso que se estaba pintando.
+            self.invalidate_heatmap()
+
+    @property
+    def geometry_view(self) -> GeometryView:
+        """Vista inmutable de solo lectura del piso activo (Fase 14-C)."""
+        return build_geometry_view(
+            self.active_floor,
+            access_points=self.project.access_points,
+            clients=self.project.clients,
+        )
 
     @property
     def floor_width_m(self) -> float:

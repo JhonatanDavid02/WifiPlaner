@@ -1,6 +1,7 @@
 """Lienzo del editor 2D: dibuja el Project y gestiona la interacción.
 
-La fuente de verdad es Session.project. El Canvas solo representa.
+La fuente de verdad es Session.project (Project + Floor activo); el
+Canvas la consume como vista de solo lectura (session.geometry_view).
 No contiene fórmulas RF.
 
 Fase 8: dibuja espacios (zonas semitransparentes) y openings
@@ -211,7 +212,8 @@ class EditorCanvas(tk.Canvas):
         """Espacios como rect semitransparente con nombre (fase 8)."""
         vp = self.viewport
         selected = self.session.selection
-        for space in self.session.floor.spaces:
+        view = self.session.geometry_view
+        for space in view.spaces:
             rect = space.rect
             x1, y1 = vp.world_to_screen(Point2D(rect.x, rect.y))
             x2, y2 = vp.world_to_screen(Point2D(rect.x + rect.width, rect.y + rect.height))
@@ -236,7 +238,8 @@ class EditorCanvas(tk.Canvas):
         """Obstáculos de mobiliario (Fase 9): footprint semisólido + nombre."""
         vp = self.viewport
         selected = self.session.selection
-        for obstacle in self.session.floor.obstacles:
+        view = self.session.geometry_view
+        for obstacle in view.obstacles:
             rect = obstacle.rect
             x1, y1 = vp.world_to_screen(Point2D(rect.x, rect.y))
             x2, y2 = vp.world_to_screen(
@@ -267,8 +270,9 @@ class EditorCanvas(tk.Canvas):
         """
         vp = self.viewport
         selected = self.session.selection
-        openings_by_wall = group_openings_by_wall(self.session.floor.openings)
-        for wall in self.session.floor.walls:
+        view = self.session.geometry_view
+        openings_by_wall = group_openings_by_wall(view.openings)
+        for wall in view.walls:
             is_sel = (
                 selected is not None
                 and selected.kind == SelectionKind.WALL
@@ -339,7 +343,8 @@ class EditorCanvas(tk.Canvas):
     def _draw_aps_and_clients(self) -> None:
         vp = self.viewport
         selected = self.session.selection
-        for ap in self.session.project.access_points:
+        view = self.session.geometry_view
+        for ap in view.access_points:
             sx, sy = vp.world_to_screen(ap.position)
             is_sel = (
                 selected is not None
@@ -358,7 +363,7 @@ class EditorCanvas(tk.Canvas):
                 ),
             )
 
-        for client in self.session.project.clients:
+        for client in view.clients:
             sx, sy = vp.world_to_screen(client.position)
             is_sel = (
                 selected is not None
@@ -446,7 +451,7 @@ class EditorCanvas(tk.Canvas):
         """Snap a extremos de paredes y a ejes H/V desde el inicio del trazo."""
         vp = self.viewport
         # 1) Extremos existentes
-        for wall in self.session.floor.walls:
+        for wall in self.session.geometry_view.walls:
             for endpoint in (wall.segment.start, wall.segment.end):
                 ex, ey = vp.world_to_screen(endpoint)
                 wx, wy = vp.world_to_screen(world)
@@ -477,20 +482,21 @@ class EditorCanvas(tk.Canvas):
         vp = self.viewport
         wx, wy = vp.world_to_screen(world)
         radius = self.HIT_RADIUS_PX
+        view = self.session.geometry_view
 
         # APs y clientes primero (hit más preciso)
-        for ap in reversed(self.session.project.access_points):
+        for ap in reversed(view.access_points):
             ax, ay = vp.world_to_screen(ap.position)
             if (ax - wx) ** 2 + (ay - wy) ** 2 <= (radius + 4) ** 2:
                 return SelectionKind.AP, ap.id
-        for client in reversed(self.session.project.clients):
+        for client in reversed(view.clients):
             cx, cy = vp.world_to_screen(client.position)
             if (cx - wx) ** 2 + (cy - wy) ** 2 <= radius ** 2:
                 return SelectionKind.CLIENT, client.id
 
         # Openings ANTES que sus paredes (un hueco es un sub-elemento de la
         # pared; si el clic cae en el hueco, hay que seleccionar el opening).
-        for opening in reversed(self.session.floor.openings):
+        for opening in reversed(view.openings):
             wall = self.session.find_wall(opening.wall_id)
             if wall is None:
                 continue
@@ -506,7 +512,7 @@ class EditorCanvas(tk.Canvas):
         # Obstáculos (Fase 9): por encima de paredes/espacios porque
         # representan mobiliario a pie de plano; un AP/cliente siguen
         # mandando (hit más preciso arriba).
-        for obstacle in reversed(self.session.floor.obstacles):
+        for obstacle in reversed(view.obstacles):
             rect = obstacle.rect
             x1, y1 = vp.world_to_screen(Point2D(rect.x, rect.y))
             x2, y2 = vp.world_to_screen(
@@ -519,7 +525,7 @@ class EditorCanvas(tk.Canvas):
                 return SelectionKind.OBSTACLE, obstacle.id
 
         # Paredes: distancia punto-segmento en píxeles
-        for wall in reversed(self.session.floor.walls):
+        for wall in reversed(view.walls):
             sx, sy = vp.world_to_screen(wall.segment.start)
             ex, ey = vp.world_to_screen(wall.segment.end)
             if self._point_segment_dist_px(wx, wy, sx, sy, ex, ey) <= radius:
@@ -527,7 +533,7 @@ class EditorCanvas(tk.Canvas):
 
         # Espacios (rect): por debajo de paredes/openings (el plano es
         # organizativo; la geometría estructural manda).
-        for space in reversed(self.session.floor.spaces):
+        for space in reversed(view.spaces):
             rect = space.rect
             x1, y1 = vp.world_to_screen(Point2D(rect.x, rect.y))
             x2, y2 = vp.world_to_screen(
