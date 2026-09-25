@@ -41,6 +41,7 @@ from engine.interference import (
 )
 from engine.simulator import simulate_coverage
 from ui.session import EditorSession, HeatmapMetric
+from tests.factories import make_session
 
 BAND_24 = next(b for b in DEFAULT_BANDS if b.id == "band_2_4")
 BAND_5 = next(b for b in DEFAULT_BANDS if b.id == "band_5")
@@ -48,7 +49,7 @@ BAND_5 = next(b for b in DEFAULT_BANDS if b.id == "band_5")
 
 @pytest.fixture
 def session() -> EditorSession:
-    return EditorSession()
+    return make_session()
 
 
 def _fingerprint(result) -> list:

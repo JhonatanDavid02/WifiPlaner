@@ -10,12 +10,13 @@ from core.geometry import Point2D
 from core.material import MaterialAttenuationError
 from core.result import QualityClass, SimulationResult
 from ui.session import EditorSession, SelectionKind
+from tests.factories import make_session
 from ui.viewport import Viewport
 
 
 @pytest.fixture
 def session() -> EditorSession:
-    return EditorSession()
+    return make_session()
 
 
 # ---------------------------------------------------------------------------

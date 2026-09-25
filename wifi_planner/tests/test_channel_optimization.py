@@ -35,6 +35,7 @@ from engine.channel_optimization import (
 from engine.coverage_grid import CoverageGrid
 from engine.simulator import simulate_coverage
 from ui.session import EditorSession
+from tests.factories import make_session
 
 BAND_24 = next(b for b in DEFAULT_BANDS if b.id == "band_2_4")
 BAND_5 = next(b for b in DEFAULT_BANDS if b.id == "band_5")
@@ -588,7 +589,7 @@ def test_property_rx_and_snr_not_destructive():
 
 @pytest.fixture
 def session() -> EditorSession:
-    return EditorSession()
+    return make_session()
 
 
 def _session_with_conflict(session: EditorSession) -> tuple:

@@ -46,13 +46,14 @@ from engine.sinr import (
 )
 from persistence import ProjectFormatError, load_project
 from ui.session import EditorSession
+from tests.factories import make_session
 
 BAND_5 = next(b for b in DEFAULT_BANDS if b.id == "band_5")
 
 
 @pytest.fixture
 def session() -> EditorSession:
-    return EditorSession()
+    return make_session()
 
 
 def _ap(ap_id: str, channel: int, width_mhz: int = 20,

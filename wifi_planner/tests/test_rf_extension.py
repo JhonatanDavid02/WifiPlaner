@@ -59,11 +59,12 @@ from persistence import (
     project_to_dict,
 )
 from ui.session import EditorSession, HeatmapMetric, _standard_label
+from tests.factories import make_session
 
 
 @pytest.fixture
 def session() -> EditorSession:
-    return EditorSession()
+    return make_session()
 
 
 def _eval_at(distance_m: float = 10.0, **radio_kwargs) -> LinkEvaluation:

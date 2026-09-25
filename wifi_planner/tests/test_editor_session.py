@@ -11,11 +11,12 @@ from ui.session import (
     create_default_project,
     next_entity_id,
 )
+from tests.factories import make_session
 
 
 @pytest.fixture
 def session() -> EditorSession:
-    return EditorSession()
+    return make_session()
 
 
 # ---------------------------------------------------------------------------

@@ -12,11 +12,12 @@ from core.result import QualityClass
 from engine.combine import combine_results
 from engine.simulator import simulate_coverage
 from ui.session import EditorSession, HEATMAP_ALL_APS, SelectionKind
+from tests.factories import make_session
 
 
 @pytest.fixture
 def session() -> EditorSession:
-    return EditorSession()
+    return make_session()
 
 
 def _add_two_aps(session: EditorSession):

@@ -40,6 +40,7 @@ from persistence import (
     save_project,
 )
 from ui.session import EditorSession, SelectionKind
+from tests.factories import make_session
 
 BAND_24 = next(b for b in DEFAULT_BANDS if b.id == "band_2_4")
 BAND_5 = next(b for b in DEFAULT_BANDS if b.id == "band_5")
@@ -48,7 +49,7 @@ BAND_6 = next(b for b in DEFAULT_BANDS if b.id == "band_6")
 
 @pytest.fixture
 def session() -> EditorSession:
-    return EditorSession()
+    return make_session()
 
 
 def _ap(session: EditorSession, ap_id: str) -> AccessPoint:
