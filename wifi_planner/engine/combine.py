@@ -8,6 +8,12 @@ mayor ``rx_power_dbm``. En empate exacto de RSSI gana el AP con menor
 ``access_point_id`` lexicográfico (política determinista, decisión U).
 El ``access_point_id`` de la evaluación ganadora es el ``best_ap_id``.
 SOM / quality / veredicto son los del AP ganador (no se promedian).
+
+Fase 11: la interferencia se anota ANTES de combinar (la sesión llama a
+``engine.interference.annotate_interference``) y viaja dentro de la
+evaluación ganadora; la regla de selección sigue siendo **mayor RSSI**
+(contrato F5 intacto — decisión BX). Este módulo no calcula
+interferencia ni cambia su firma.
 """
 
 from __future__ import annotations

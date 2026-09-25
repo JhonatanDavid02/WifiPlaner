@@ -455,6 +455,8 @@ class WifiPlannerApp(tk.Tk):
             messagebox.showinfo("Simulación", str(exc), parent=self)
             return
         self.properties.show_simulation_text(self.session.simulation_summary_text())
+        # Fase 11: el panel del AP muestra su bloque de interferencia.
+        self.properties.refresh()
         self._schedule_heatmap()
 
     def _on_cursor(self, x_m: float, y_m: float) -> None:
@@ -559,6 +561,9 @@ class WifiPlannerApp(tk.Tk):
         clients = self.session.client_rssi_lines()
         if clients:
             self.properties.append_heatmap_text("\nClientes:\n" + "\n".join(clients))
+        # Fase 11: el panel del AP muestra su bloque de interferencia
+        # (el heatmap con métrica «interference» anota los resultados).
+        self.properties.refresh()
         self._update_status_coords(None, None)
 
     # ------------------------------------------------------------------

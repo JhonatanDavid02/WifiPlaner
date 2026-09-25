@@ -69,6 +69,17 @@ class LinkEvaluation:
         snr_db: SNR = P_rx − piso de ruido, en dB (F7).
             0.0 solo en constructores manuales; evaluate_link lo calcula.
         snr_meets_target: True si SNR >= objetivo de SNR (F7).
+        interference_evaluated: True si el modelo espectral de F11
+            anotó esta evaluación (con o sin contribuidores). False =
+            no modelada (AP sin canal o corrida sin contexto F11).
+        interference_dbm: Potencia de interferencia AGREGADA efectiva
+            en dBm (F11, información paralela). None = sin
+            contribuidores o sin modelo. NO redefine RSSI/SOM/SNR y NO
+            es SINR (frontera F11 → F12, decisión BX/CD).
+        interferer_count: Número de APs interferentes que contribuyen
+            en este punto (F11).
+        dominant_interferer_ap_id: Interferente dominante en este punto
+            (mayor contribución; empate ⇒ menor id — decisión CA).
     """
 
     access_point_id: str
@@ -86,6 +97,11 @@ class LinkEvaluation:
     noise_floor_dbm: float = DEFAULT_NOISE_FLOOR_DBM
     snr_db: float = 0.0
     snr_meets_target: bool = False
+    # Fase 11: interferencia (información paralela; RSSI intacto, BX).
+    interference_evaluated: bool = False
+    interference_dbm: float | None = None
+    interferer_count: int = 0
+    dominant_interferer_ap_id: str | None = None
 
 
 @dataclass(frozen=True)

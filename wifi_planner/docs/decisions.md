@@ -1060,6 +1060,147 @@ empíricamente (sondas de parser, invariantes y residuales).
 
 ---
 
+## Fase 11 — Interacción espectral e interferencia
+
+F11 modela la **interacción entre emisores** sin tocar la física
+histórica: FSPL, link budget, RSSI, SOM, SNR, paredes, openings y
+obstáculos siguen siendo exactamente los de F1–F10 (A/B byte-idéntico).
+La información se calcula **en paralelo** al RSSI y F12 la usará para el
+SINR. Archivos nuevos/modificados: `engine/interference.py` (nuevo),
+`core/result.py` (+4 campos con default), `engine/combine.py`
+(docstring), `engine/__init__.py` (exports), `ui/session.py` (contexto,
+anotación, métrica, panel, stats), `ui/coverage_renderer.py` (registro +
+escala + leyenda + rama de pintado), `ui/panels/toolbar.py` (etiqueta),
+`ui/panels/properties.py` (bloque AP), `ui/app.py` (refresh),
+`tests/test_interference.py` (nuevo).
+
+### Decisión BX — Información paralela: `LinkEvaluation` gana 4 campos; RSSI intacto
+
+- **Decisión:** `LinkEvaluation` añade al final, todos con default y
+  opcionales: `interference_evaluated: bool = False`,
+  `interference_dbm: float | None = None`, `interferer_count: int = 0`,
+  `dominant_interferer_ap_id: str | None = None`. La anotación ocurre
+  en la **sesión** (con los P_rx ya calculados) y `combine_results`
+  sigue eligiendo por **mayor RSSI** sin cambios funcionales: la
+  evaluación ganadora *lleva* su interferencia como dato adicional.
+- **Razón:** información paralela = cero riesgo para F1/F5/F7/F10:
+  `rx_power_dbm`/`som_db`/`snr_db`/`quality`/`verdict` no cambian
+  (A/B en tests y `accept_f11` paso 5). Los tests de F1–F10 usan
+  fingerprints por proyección de campos, así que ganar campos con
+  default es compatible sin tocar ningún test congelado. No se define
+  `sinr`: eso es F12 (decisión CD).
+
+### Decisión BY — Ocupación espectral simplificada y solapamiento semiabierto
+
+- **Decisión:** cada emisión ocupa `centro ± ancho/2` (rectángulo
+  ideal; centro derivado del catálogo F10 — este módulo no duplica
+  tablas). `overlap = max(0, min(hi_a,hi_b) − max(lo_a,lo_b))` con
+  intervalos **semiabiertos** `[lo, hi)` y `overlap_ratio =
+  overlap / min(w_a, w_b)` (fracción del ancho MENOR; contenido ⇒ 1.0).
+  Dos emisiones que solo se tocan en el borde ⇒ `0 MHz / 0 %`.
+- **Razón:** determinismo total (sin casos de borde ambiguos), sin
+  dependencias nuevas y honestidad documentada: NO es la máscara
+  espectral PHY real (sin lobulaciones, guard bands ni ruido
+  espectral) — es una aproximación de ingeniería para planificación.
+
+### Decisión BZ — Contribución efectiva con PSD plano rectangular (fórmula derivada)
+
+- **Decisión:** `I = P_rx,i + 10·log10(overlap / W_i)` por interferente,
+  aislada en `effective_interference_dbm`. `overlap = 0 ⇒ None` (no
+  se usa −∞), acotada arriba por `P_rx,i` (`overlap ≤ W_i ⇒ término ≤
+  0 dB`), monótona en `overlap`, redondeada a 2 decimales.
+- **Razón:** es la consecuencia física de asumir densidad espectral
+  **plana** sobre el ancho del interferente — no una penalización
+  mágica. Al estar aislada, F12/F14 puede reemplazarla (p.ej. con PSD
+  real) sin tocar el resto del módulo. Sin overlap = sin aporte: la
+  ausencia se representa con `None`, jamás con −∞.
+
+### Decisión CA — Agregación en dominio lineal y determinismo total
+
+- **Decisión:** las contribuciones se convierten a mW
+  (`dbm_to_mw`/`mw_to_dbm`, centralizados como **única** definición en
+  `engine/interference.py`), se suman linealmente y se vuelve a dBm
+  (`aggregate_dbm`, 2 decimales). Sin contribuidores ⇒ `None`.
+  Orden canónico `(-potencia, ap_id)`; dominante = mayor contribución,
+  **empate ⇒ menor `access_point_id`**; la suma sigue ese orden.
+- **Razón:** `dBm` no es aditiva (−3 + −3 ≠ −6). Sin resultados no se
+  inventa −∞ ni −100 dBm: `None` es el «sin datos / sin contribuidores»
+  honesto que la UI distingue de «0 interferentes». El sort por id
+  elimina la dependencia del orden del proyecto/JSON.
+
+### Decisión CB — Ámbito: misma banda + APs con canal; sin canal = fuera del modelo
+
+- **Decisión:** solo interactúan APs del **mismo `band_id`** y **con
+  canal configurado**. La anotación usa los resultados ya simulados de
+  los APs vecinos (contexto): en `run_simulation` y en `run_heatmap`
+  con selector individual se simulan esos vecinos y se anota el AP
+  deseado; con «Todos los AP» se anota cada uno antes de combinar. La
+  métrica visible NO condiciona el contexto (el panel y la métrica
+  «interference» siempre tienen datos cuando hay canales). AP sin canal
+  ⇒ evaluaciones sin anotar (`interference_evaluated=False`), pero su
+  RSSI histórico sigue funcionando igual que en F1–F10.
+- **Razón:** nunca hay interacción entre bandas (2.4/5/6 GHz jamás se
+  solapan en este modelo), el contrato F5 de bandas mixtas queda
+  intacto, y los proyectos **sin canales** (F1–F9) no pagan ningún coste
+  extra: la puerta `len(results) >= 2` + `ap.channel is not None`
+  además protege los tests con `simulate_coverage` monkeypacheado.
+
+### Decisión CC — UI: bloque en el panel + métrica «interferencia» fuera del enum F7
+
+- **Decisión:** el panel de AP añade un bloque «Interferencia» vía
+  `session.ap_interference_lines(ap_id)` con **solo datos reales**:
+  `(AP sin canal)` / `0 APs (sin espectro compartido)` / `sin datos de
+  corrida` / `APs interferentes (máx)` + `Potencia agregada máx` +
+  `Dominante`. El heatmap gana la métrica `interference`: validada
+  contra `ui.coverage_renderer.HEATMAP_METRICS` (registro único,
+  ahora `("rssi", "snr", "interference")`), **no** contra el enum
+  `HeatmapMetric`, que sigue congelado en `{rssi, snr}` (contrato de
+  tests F7). Escala visual propia (dirección invertida: más alto = peor;
+  `None` ⇒ color de «sin interferencia»), leyenda con bandas de la
+  escala (no umbrales RF), header de `heatmap_stats_text` con el
+  resumen, y `app` refresca el panel tras simular y tras el heatmap.
+- **Razón:** la UI de F7 congeló el enum por contrato; ampliarlo rompería
+  `{m.value for m in HeatmapMetric} == {"rssi","snr"}`. El registro del
+  renderer es la pieza que ya validaba `build_heatmap_image`, así que
+  ahí vive la extensión. Las líneas del panel nunca inventan números:
+  «sin datos» ≠ «0».
+
+### Decisión CD — Frontera F11 / F12: sin SINR, sin CCA/CSMA, sin optimización
+
+- **Decisión:** F11 calcula **solo** ocupación, solapamiento y potencia
+  recibida/agregada de interferentes. NO se calcula SINR, CCA/CSMA,
+  throughput/capacidad, selección ni optimización de canal, roaming,
+  MLO, OFDMA/MCS, CAPWAP ni WMM (lo prohíbe `audit_f11.py` con
+  negaciones permitidas: «no se calcula sinr», «f12», …). La
+  persistencia **no cambia**: schema v1 intacto, cero rastros de
+  `interference` en `persistence/`; los campos viven solo en memoria
+  de resultados.
+- **Razón:** el spec define F11 como la capa de *conocimiento* de
+  interferencia y F12 como quien la convierte en métrica de calidad de
+  enlace. Mantener el esquema en v1 evita migraciones y romper la
+  compatibilidad con archivos F1–F10 sin ganar nada (los resultados no
+  se persisten). **Nota:** `audit_f11.py` sustituye a `audit_f10.py`:
+  re-ejecuta todas las verificaciones estructurales de F10 (capas,
+  catálogo único, herencia) — además corrige su bug latente que
+  saltaba el escaneo de `ui/` — y cambia la barrera de vocabulario de
+  «prohibir interferencia» (correcta en F10, obsoleta aquí) por la de
+  F12. La verificación de capas de `audit_f10.py` sigue pasando bajo
+  F11; solo su barrera léxica de F10 queda superada por diseño.
+
+### Decisión CE — Rendimiento: sin caché, sin hilos, coste O(P·N²) de aritmética
+
+- **Decisión:** cero estado compartido: `engine/interference.py` no
+  importa `threading`/`concurrent`/`multiprocessing` ni usa
+  `lru_cache`; la anotación es `O(puntos × APs²)` de sola aritmética
+  (aprox. µs por punto y par) y las simulaciones de contexto solo
+  existen donde hay canales. Sin GPU, sin red, sin paralelismo.
+- **Razón:** los grids del editor son ≤ miles de puntos y ≤ decenas de
+  APs; el coste es despreciable frente a la propia simulación F4.
+  Introducir caché/hilos rompería el determinismo y la testabilidad
+  puros de la capa engine sin necesidad.
+
+---
+
 ## Discrepancias encontradas (no resueltas silenciosamente)
 
 ### 1. Distancias `d_max` contradictorias

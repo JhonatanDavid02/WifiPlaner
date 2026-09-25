@@ -501,13 +501,18 @@ class PropertiesPanel(ttk.Frame):
             ap = session.selected_ap()
             if ap:
                 rf_lines = self._ap_rf_lines(ap)
+                # Fase 11: interferencia del AP (solo datos reales del
+                # modelo; decisión CC). Se añaden después de las líneas
+                # RF sin tocar su contenido (contrato F10 intacto).
+                interference_lines = session.ap_interference_lines(ap.id)
+                detail = "\n".join(rf_lines + interference_lines)
                 self._set_text(
                     self._info,
                     f"Access Point\n\n"
                     f"ID: {ap.id}\n"
                     f"X: {ap.position.x:.2f} m\n"
                     f"Y: {ap.position.y:.2f} m\n"
-                    f"{rf_lines[0]}\n{rf_lines[1]}\n{rf_lines[2]}",
+                    f"{detail}",
                 )
                 self._material_combo.configure(state="disabled")
                 self._thickness_entry.configure(state="disabled")

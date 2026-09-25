@@ -36,10 +36,19 @@ from core.wall import (
 from engine.classifier import rf_diagnostic
 from engine.combine import combine_results
 from engine.coverage_grid import CoverageGrid
+from engine.interference import (
+    annotate_interference,
+    emission_for_ap,
+    interference_summary,
+)
 from engine.simulator import simulate_coverage
 from persistence import EditorState
 from persistence import load_project as _load_document
 from persistence import save_project as _save_document
+# Registro único de métricas del heatmap (F7: rssi/snr; F11 añade
+# «interference» — decisión CC: el enum HeatmapMetric está congelado
+# por contrato F7, así que la validación usa el registro del renderer).
+from ui.coverage_renderer import HEATMAP_METRIC_INTERFERENCE, HEATMAP_METRICS
 
 # Selector de heatmap: todos los APs (cobertura combinada, Fase 5).
 HEATMAP_ALL_APS = "__all__"
@@ -62,6 +71,10 @@ class HeatmapMetric(str, Enum):
 
     Es una vista, no configuración del proyecto: no se persiste ni
     marca ``dirty`` (decisión BA).
+
+    El enum queda CONGELADO con los valores de F7 (contrato de tests);
+    la métrica de interferencia de F11 vive en
+    ``ui.coverage_renderer.HEATMAP_METRICS`` (decisión CC).
     """
 
     RSSI = "rssi"
@@ -460,14 +473,17 @@ class EditorSession:
             self.invalidate_heatmap()
 
     def set_heatmap_metric(self, metric: str) -> None:
-        """Métrica visual del heatmap: ``rssi`` o ``snr`` (Fase 7).
+        """Métrica visual del heatmap: ``rssi``, ``snr`` o ``interference``.
 
         Es una vista: invalida el heatmap (los píxeles a pintar cambian)
-        pero NO marca ``dirty`` ni se persiste (decisión BA).
+        pero NO marca ``dirty`` ni se persiste (decisión BA). La métrica
+        de interferencia (F11, decisión CC) se añade al registro del
+        renderer sin tocar el enum congelado de F7.
         """
-        if metric not in {m.value for m in HeatmapMetric}:
+        if metric not in HEATMAP_METRICS:
             raise ValueError(
-                f"Métrica no soportada: {metric!r} (usa 'rssi' o 'snr')."
+                f"Métrica no soportada: {metric!r} "
+                f"(usa {' / '.join(repr(m) for m in HEATMAP_METRICS)})."
             )
         if metric != self.heatmap_metric:
             self.heatmap_metric = metric
@@ -500,6 +516,99 @@ class EditorSession:
                 return [ap]
         # AP del selector ya no existe → todos (o el primero si solo queda)
         return aps
+
+    # ------------------------------------------------------------------
+    # Interferencia espectral (Fase 11: contexto y anotación)
+    # ------------------------------------------------------------------
+
+    def _interference_context_aps(
+        self, ap: AccessPoint, band_id: str | None = None
+    ) -> list[AccessPoint]:
+        """APs que pueden interferir con ``ap`` (F11, decisión CB).
+
+        Solo APs distintos, **con canal configurado** y en la **misma
+        banda resuelta**: jamás hay interacción entre bandas. Un AP con
+        banda irreferenciable se omite aquí (no debe romper la corrida
+        del AP deseado; su propia simulación seguirá validándolo).
+        """
+        band_id = band_id or self.band_id
+        try:
+            target_band = self.resolve_band_for_ap(ap, band_id)
+        except KeyError:
+            return []
+        context: list[AccessPoint] = []
+        for other in self.project.access_points:
+            if other.id == ap.id or other.channel is None:
+                continue
+            try:
+                other_band = self.resolve_band_for_ap(other, band_id)
+            except KeyError:
+                continue
+            if other_band.id == target_band.id:
+                context.append(other)
+        return context
+
+    def _spectral_emissions(
+        self, aps: Iterable[AccessPoint], band_id: str | None = None
+    ) -> dict:
+        """``{ap_id: SpectralEmission}`` solo para APs con canal (CB)."""
+        band_id = band_id or self.band_id
+        emissions: dict = {}
+        for ap in aps:
+            if ap.channel is None:
+                continue
+            emission = emission_for_ap(
+                ap, self.resolve_band_for_ap(ap, band_id)
+            )
+            if emission is not None:
+                emissions[ap.id] = emission
+        return emissions
+
+    def ap_interference_lines(self, ap_id: str) -> list[str]:
+        """Líneas de interferencia del AP para el panel (F11, decisión CC).
+
+        Solo datos reales del modelo (sin números inventados):
+
+        - AP sin canal ⇒ fuera del modelo espectral (decisión CB).
+        - Sin otros APs con canal en la banda ⇒ 0 interferentes
+          (es una propiedad de la configuración, no de una corrida).
+        - Con candidatos pero sin corrida que lo anote ⇒ «sin datos».
+        """
+        ap = next(
+            (a for a in self.project.access_points if a.id == ap_id), None
+        )
+        if ap is None:
+            return []
+        if ap.channel is None:
+            return ["Interferencia: — (AP sin canal)"]
+        if not self._interference_context_aps(ap, self.band_id):
+            return ["Interferencia: 0 APs (sin espectro compartido)"]
+        evaluations: list = []
+        if (
+            self.last_simulation is not None
+            and self.last_simulation.evaluations
+            and self.last_simulation.evaluations[0].access_point_id == ap_id
+        ):
+            evaluations = list(self.last_simulation.evaluations)
+        elif self.last_heatmap is not None:
+            evaluations = [
+                e
+                for e in self.last_heatmap.evaluations
+                if e.access_point_id == ap_id
+            ]
+        summary = interference_summary(evaluations)
+        if summary is None or summary.evaluated_points == 0:
+            return ["Interferencia: — (sin datos de corrida)"]
+        lines = ["Interferencia:", f"APs interferentes (máx): {summary.interferer_count_max}"]
+        if summary.interference_max_dbm is None:
+            lines.append("Potencia agregada: sin interferentes")
+        else:
+            lines.append(
+                f"Potencia agregada máx: {summary.interference_max_dbm:g} dBm"
+            )
+            if summary.dominant_interferer_ap_id:
+                lines.append(f"Dominante: {summary.dominant_interferer_ap_id}")
+        return lines
 
     def run_heatmap(self, band_id: str | None = None) -> SimulationResult:
         """Simula el CoverageGrid con las paredes reales.
@@ -547,7 +656,39 @@ class EditorSession:
                 )
             )
 
-        result = results[0] if len(results) == 1 else combine_results(results)
+        # Fase 11: contexto espectral. Con selector individual y AP con
+        # canal (decisión CB) se simulan los demás APs con canal de la
+        # misma banda; se usan únicamente para ANOTAR el AP seleccionado
+        # (la vista sigue siendo su heatmap). La métrica visible NO lo
+        # condiciona (así el panel y la métrica «interference» siempre
+        # tienen datos reales cuando los canales están configurados).
+        # Proyectos sin canales no sufren este coste (decisión CE).
+        context: list[AccessPoint] = []
+        if len(aps) == 1 and aps[0].channel is not None:
+            context = self._interference_context_aps(aps[0], band_id)
+            for other in context:
+                results.append(
+                    simulate_coverage(
+                        project=self.project,
+                        access_point=other,
+                        frequency_band=self.resolve_band_for_ap(other, band_id),
+                        sample_points=points,
+                        walls=self.floor.walls,
+                        openings=self.floor.openings,
+                        obstacles=self.floor.obstacles,
+                    )
+                )
+
+        # Fase 11: anota interferencia en cada evaluación (reutiliza
+        # los P_rx ya calculados; decide BX). Sin resultados o con un
+        # solo AP no hay contexto posible ⇒ se omite.
+        if len(results) >= 2:
+            emissions = self._spectral_emissions(
+                list(aps) + context, band_id
+            )
+            results = annotate_interference(results, emissions)
+
+        result = results[0] if len(aps) == 1 else combine_results(results)
         self.last_heatmap = result
         self.heatmap_dirty = False
         return result
@@ -577,6 +718,20 @@ class EditorSession:
                 f"Métrica: SNR (dB)\n"
                 f"SNR objetivo: {self.project.thresholds.snr_target_db:g} dB\n"
             )
+        elif self.heatmap_metric == HEATMAP_METRIC_INTERFERENCE:
+            # Fase 11 (decisión CC): la métrica vive fuera del enum
+            # congelado de F7, en el registro del renderer.
+            header += "Métrica: Interferencia (dBm)\n"
+            summary = interference_summary(self.last_heatmap.evaluations)
+            if summary is None or summary.evaluated_points == 0:
+                header += "Modelo espectral: sin datos en esta corrida\n"
+            elif summary.interference_max_dbm is None:
+                header += "Modelo espectral: sin interferentes en la malla\n"
+            else:
+                header += (
+                    f"Interferencia agregada máx: {summary.interference_max_dbm:g} dBm\n"
+                    f"APs interferentes (máx): {summary.interferer_count_max}\n"
+                )
         header += "\n"
         return header + stats_text(self.last_heatmap)
 
@@ -1233,6 +1388,28 @@ class EditorSession:
             openings=self.floor.openings,
             obstacles=self.floor.obstacles,
         )
+        # Fase 11: anota la interferencia del AP deseado en sus puntos.
+        # Solo si tiene canal (decisión CB); con otros APs con canal en
+        # la banda se simulan esos (reutiliza los P_rx; sin fórmulas
+        # nuevas) y se anota antes de guardar el resultado (decisión BX).
+        if ap.channel is not None:
+            context = self._interference_context_aps(ap, band_id)
+            if context:
+                results = [result]
+                for other in context:
+                    results.append(
+                        simulate_coverage(
+                            project=self.project,
+                            access_point=other,
+                            frequency_band=self.resolve_band_for_ap(other, band_id),
+                            sample_points=points,
+                            walls=self.floor.walls,
+                            openings=self.floor.openings,
+                            obstacles=self.floor.obstacles,
+                        )
+                    )
+                emissions = self._spectral_emissions([ap] + context, band_id)
+                result = annotate_interference(results, emissions)[0]
         self.last_simulation = result
         return result
 

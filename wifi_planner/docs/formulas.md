@@ -465,3 +465,113 @@ transmite cada AP. La simulación resuelve
 proyectos sin `band_id` (F1–F9) se comportan exactamente como antes.
 La frecuencia central derivada es **metadata visible** (panel y
 lienzo), no un parámetro de la fórmula.
+
+---
+
+## 13. Interferencia espectral (Fase 11): ocupación, solapamiento y agregación
+
+> F11 añade **interacción entre emisores** como información paralela.
+> Nada de esta sección modifica las secciones 1–12: RSSI, SOM, SNR,
+> calidad y veredicto de F1–F10 son idénticos (A/B byte-idéntico).
+> Implementación: `engine/interference.py`.
+
+### Ocupación espectral (decisión BY)
+
+Cada emisión se modela como un rectángulo ideal centrado en la
+frecuencia central derivada del catálogo (sección 12):
+
+```
+intervalo = [ f_c − W/2 , f_c + W/2 )          (MHz)
+```
+
+- `f_c` = `WifiChannel.center_frequency_mhz` del canal del AP (F10).
+- `W`  = `radio.channel_width_mhz` del AP (20/40/80/160).
+- Intervalos **semiabiertos**: dos emisiones que solo se tocan en un
+  borde no se solapan (determinismo).
+
+### Solapamiento entre dos emisiones (decisión BY)
+
+```
+overlap       = max(0, min(hi_a, hi_b) − max(lo_a, lo_b))
+overlap_ratio = overlap / min(W_a, W_b)          ∈ [0, 1]
+```
+
+- `overlap_ratio = 1.0` cuando son idénticas, o cuando el ancho menor
+  queda contenido en el mayor.
+- `overlap = 0` para emisiones disjuntas o solo tocadas: **no hay
+  contribución** (nunca se usa −∞).
+
+### Contribución efectiva de un interferente (decisión BZ)
+
+Con **densidad espectral de potencia plana** sobre el ancho del
+interferente, la fracción de su potencia que cae dentro del intervalo
+interesado es `overlap / W_i`:
+
+```
+I_i = P_rx,i + 10·log10( overlap / W_i )        [dBm]   si overlap > 0
+I_i = None                                        si overlap = 0
+```
+
+- `P_rx,i` es la potencia recibida del interferente calculada con el
+  **mismo** pipeline F1–F10 (FSPL, paredes, openings, obstáculos): no
+  hay física nueva, solo una combinación posterior.
+- Propiedades: monótona creciente en `overlap`, acotada
+  `I_i ≤ P_rx,i` (pues `overlap ≤ W_i`), `overlap = W_i ⇒ I_i = P_rx,i`.
+- Redondeo a 2 decimales. Fórmula aislada en
+  `effective_interference_dbm` (reemplazable en F12/F14).
+
+### Agregación en dominio lineal (decisión CA)
+
+Los dBm **no se suman**; se convierten a mW, se suman y se vuelve a dBm:
+
+```
+I_total = 10·log10( Σ_i 10^(I_i / 10) )          [dBm]
+I_total = None        si Σ no tiene términos
+```
+
+- Implementación: `dbm_to_mw` / `mw_to_dbm` / `aggregate_dbm`
+  (única definición en `engine/interference.py`), 2 decimales.
+- Orden canónico de suma: `(-potencia, ap_id)`; **dominante** = mayor
+  contribución, empate ⇒ menor `access_point_id` (determinismo total).
+
+### Supuestos y limitaciones (honestidad del modelo)
+
+- Rectángulo ideal: **sin** lobulaciones, guard bands, ruido
+  espectral ni máscara PHY real.
+- PSD **plana** dentro del ancho del interferente (hipótesis de la
+  fórmula anterior).
+- Solo bandas **iguales** y APs **con canal** interactúan (decisión
+  CB); un AP sin canal queda fuera del modelo espectral pero su RSSI
+  histórico sigue funcionando.
+- No se modela delay spread, temporización, captura, ni ganancia
+  direccional: es una **estimación de planificación**, no una
+  simulación electromagnética.
+
+### RSSI ≠ interferencia (información paralela)
+
+```
+LinkEvaluation:
+  rx_power_dbm       ← F1–F10 (SEÑAL deseada; intocable, decisión BX)
+  interference_dbm   ← F11 (INTERFERENCIA agregada percibida; paralela)
+```
+
+- La anotación **no altera** `rx_power_dbm`, `som_db`, `snr_db`,
+  `quality` ni `verdict` (A/B en `tests/test_interference.py` y en
+  `accept_f11.py` paso 5).
+- `interference_dbm = None` ⇒ sin contribuidores o sin modelo;
+  `interference_evaluated = False` ⇒ el modelo F11 no corrió.
+- `combine_results` sigue eligiendo el **mayor RSSI** por punto: la
+  interferencia viaja como dato de la evaluación ganadora.
+
+### Frontera F11 → F12 (decisión CD)
+
+F12 podrá definir, sobre esta base:
+
+```
+SINR(dB) = P_rx_deseado − 10·log10(10^(NoiseFloor/10) + 10^(I_total/10))
+```
+
+**Esa fórmula NO está implementada en F11**: no existe campo `sinr`,
+no hay CCA/CSMA, ni umbral de colisión, ni optimización de canal.
+`audit_f11.py` prohíbe ese vocabulario en los `.py` de F11 salvo
+negaciones explícitas.

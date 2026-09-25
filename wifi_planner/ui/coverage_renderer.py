@@ -50,9 +50,28 @@ _SNR_STOPS: tuple[tuple[float, tuple[int, int, int]], ...] = (
 
 DEFAULT_HEATMAP_ALPHA = 110  # 0–255; semitransparente sobre el plano
 
+# Fase 11: escala visual de INTERFERENCIA (dBm, decisión CC). Dirección
+# INVERTIDA respecto a RSSI: aquí más alto = PEOR. None (sin
+# contribuidores) se colorea como el mínimo: «sin interferencia».
+# Presentación pura: no son umbrales RF ni tocan el RSSI histórico.
+_INTERFERENCE_SCALE_MIN = -95.0   # sin/nula → verde (buena)
+_INTERFERENCE_SCALE_MAX = -30.0   # fuerte → rojo/morado (mala)
+
+_INTERFERENCE_STOPS: tuple[tuple[float, tuple[int, int, int]], ...] = (
+    (-95.0, (80, 200, 120)),    # verde brillante: sin interferencia
+    (-85.0, (150, 200, 80)),    # verde lima: muy baja
+    (-70.0, (230, 190, 80)),    # ámbar: baja
+    (-55.0, (230, 140, 70)),    # naranja: alta
+    (-40.0, (200, 80, 80)),     # rojo: muy alta
+    (-30.0, (140, 50, 90)),     # morado apagado: extrema
+)
+
 # Métricas soportadas por el render (vista; la validación es aquí y en
-# la sesión, nunca en el engine).
-HEATMAP_METRICS = ("rssi", "snr")
+# la sesión, nunca en el engine). El enum HeatmapMetric de F7 queda
+# congelado por contrato; «interference» se añade SOLO a este registro
+# (Fase 11, decisión CC).
+HEATMAP_METRIC_INTERFERENCE = "interference"
+HEATMAP_METRICS = ("rssi", "snr", HEATMAP_METRIC_INTERFERENCE)
 
 
 def _lerp_color(rssi_a: float, rgb_a, rssi_b: float, rgb_b: float, rssi: float) -> tuple[int, int, int]:
@@ -116,6 +135,27 @@ def snr_to_color(snr_db: float, alpha: int = DEFAULT_HEATMAP_ALPHA) -> tuple[int
     return (r, g, b, a)
 
 
+def interference_to_rgb(interference_dbm: float | None) -> tuple[int, int, int]:
+    """Interferencia agregada (dBm) → color RGB (Fase 11, decisión CC).
+
+    Escala invertida (más alto = peor). ``None`` = sin contribuidores
+    efectivos ⇒ color de «sin interferencia». Solo presentación.
+    """
+    value = _INTERFERENCE_SCALE_MIN if interference_dbm is None else interference_dbm
+    return _stops_to_rgb(
+        value, _INTERFERENCE_SCALE_MIN, _INTERFERENCE_SCALE_MAX, _INTERFERENCE_STOPS
+    )
+
+
+def interference_to_color(
+    interference_dbm: float | None, alpha: int = DEFAULT_HEATMAP_ALPHA
+) -> tuple[int, int, int, int]:
+    """Interferencia (dBm o None) → RGBA para la imagen del heatmap."""
+    r, g, b = interference_to_rgb(interference_dbm)
+    a = max(0, min(255, int(alpha)))
+    return (r, g, b, a)
+
+
 def quality_color(quality: QualityClass) -> tuple[int, int, int]:
     """Color de la leyenda para una clase de calidad (más plano)."""
     mapping = {
@@ -129,11 +169,13 @@ def quality_color(quality: QualityClass) -> tuple[int, int, int]:
 
 
 def legend_title(metric: str = "rssi") -> str:
-    """Título de la leyenda según la métrica visible (Fase 7)."""
+    """Título de la leyenda según la métrica visible (Fase 7 + 11)."""
     if metric == "snr":
         return "SNR (dB)"
     if metric == "rssi":
         return "Cobertura Wi-Fi"
+    if metric == HEATMAP_METRIC_INTERFERENCE:
+        return "Interferencia (dBm)"
     raise ValueError(f"Métrica no soportada: {metric!r}")
 
 
@@ -145,6 +187,8 @@ def legend_rows(thresholds: CoverageThresholds, metric: str = "rssi") -> list[di
 
     - ``rssi``: 5 filas de calidad (idénticas a Fase 4/5, contrato).
     - ``snr``: 2 filas semánticas frente a ``snr_target_db`` (Fase 7).
+    - ``interference``: bandas visuales de la escala F11 (paradas de
+      ``_INTERFERENCE_STOPS``; NO son umbrales RF — decisión CC).
     """
     if metric == "snr":
         target = thresholds.snr_target_db
@@ -158,6 +202,35 @@ def legend_rows(thresholds: CoverageThresholds, metric: str = "rssi") -> list[di
                 "label": "Por debajo",
                 "color": (120, 70, 90),
                 "range": f"< {target:g} dB",
+            },
+        ]
+    if metric == HEATMAP_METRIC_INTERFERENCE:
+        # Cortes alineados a _INTERFERENCE_STOPS (mismos colores).
+        return [
+            {
+                "label": "Interferencia extrema",
+                "color": (140, 50, 90),
+                "range": "≥ -30 dBm",
+            },
+            {
+                "label": "Interferencia muy alta",
+                "color": (200, 80, 80),
+                "range": "≥ -40 dBm",
+            },
+            {
+                "label": "Interferencia alta",
+                "color": (230, 140, 70),
+                "range": "≥ -55 dBm",
+            },
+            {
+                "label": "Interferencia baja",
+                "color": (230, 190, 80),
+                "range": "≥ -70 dBm",
+            },
+            {
+                "label": "Sin interferencia",
+                "color": (80, 200, 120),
+                "range": "< -85 dBm",
             },
         ]
     if metric != "rssi":
@@ -208,8 +281,9 @@ def build_heatmap_image(
     indicado por el llamador.
 
     Args:
-        metric: ``"rssi"`` (default, Fase 4/5) o ``"snr"`` (Fase 7);
-            decide qué valor de cada evaluación se colorea.
+        metric: ``"rssi"`` (default, Fase 4/5), ``"snr"`` (Fase 7) o
+            ``"interference"`` (Fase 11); decide qué valor de cada
+            evaluación se colorea.
 
     Returns:
         Imagen RGBA del tamaño del rect del piso en píxeles, o None si
@@ -236,12 +310,23 @@ def build_heatmap_image(
 
     half_px = max(1.0, viewport.world_to_screen_len(cell_size_m) / 2.0)
 
-    color_fn = snr_to_color if metric == "snr" else rssi_to_color
+    if metric == "snr":
+        color_fn = snr_to_color
+    elif metric == HEATMAP_METRIC_INTERFERENCE:
+        color_fn = interference_to_color
+    else:
+        color_fn = rssi_to_color
     for ev in evaluations:
         sx, sy = viewport.world_to_screen(ev.point)
         cx = sx - x1f
         cy = sy - y1f
-        value = ev.snr_db if metric == "snr" else ev.rx_power_dbm
+        if metric == "snr":
+            value = ev.snr_db
+        elif metric == HEATMAP_METRIC_INTERFERENCE:
+            # None ⇒ sin contribuidores (color de «sin interferencia»).
+            value = ev.interference_dbm
+        else:
+            value = ev.rx_power_dbm
         color = color_fn(value, alpha=alpha)
         draw.rectangle(
             (cx - half_px, cy - half_px, cx + half_px, cy + half_px),

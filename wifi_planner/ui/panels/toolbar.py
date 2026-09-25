@@ -12,8 +12,9 @@ from ui.session import HEATMAP_ALL_APS, Tool
 BAND_LABEL_BY_ID = {"band_2_4": "2.4 GHz", "band_5": "5 GHz", "band_6": "6 GHz"}
 BAND_ID_BY_LABEL = {label: band_id for band_id, label in BAND_LABEL_BY_ID.items()}
 
-# Etiquetas visibles ↔ métricas del heatmap (Fase 7).
-METRIC_LABEL_BY_ID = {"rssi": "RSSI", "snr": "SNR"}
+# Etiquetas visibles ↔ métricas del heatmap (Fase 7 + Fase 11: la
+# métrica de interferencia vive en el registro del renderer, decisión CC).
+METRIC_LABEL_BY_ID = {"rssi": "RSSI", "snr": "SNR", "interference": "Interferencia"}
 METRIC_ID_BY_LABEL = {label: metric_id for metric_id, label in METRIC_LABEL_BY_ID.items()}
 
 
@@ -124,14 +125,14 @@ class Toolbar(ttk.Frame):
             command=self._heatmap_changed,
         ).grid(row=0, column=14, padx=4, pady=4)
 
-        # Fase 7: métrica del heatmap (vista: RSSI / SNR).
+        # Fase 7: métrica del heatmap (vista: RSSI / SNR / Interferencia).
         ttk.Label(self, text="Métrica:").grid(row=0, column=15, **pad)
         metric_combo = ttk.Combobox(
             self,
             textvariable=self._metric_var,
             values=list(METRIC_LABEL_BY_ID.values()),
             state="readonly",
-            width=7,
+            width=13,
         )
         metric_combo.grid(row=0, column=16, **pad)
         metric_combo.bind("<<ComboboxSelected>>", self._metric_changed)
@@ -193,7 +194,7 @@ class Toolbar(ttk.Frame):
         self._heatmap_var.set(bool(enabled))
 
     def set_metric(self, metric_id: str) -> None:
-        """Sincroniza el combo de métrica con el modelo ('rssi'/'snr')."""
+        """Sincroniza el combo de métrica con el modelo ('rssi'/'snr'/…)."""
         label = METRIC_LABEL_BY_ID.get(metric_id)
         if label:
             self._metric_var.set(label)

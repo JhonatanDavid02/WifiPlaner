@@ -45,6 +45,20 @@ from engine.classifier import (
 from engine.coverage_grid import CoverageGrid, MAX_GRID_POINTS, MIN_RESOLUTION_M
 from engine.simulator import simulate_coverage
 from engine.combine import combine_results
+from engine.interference import (
+    SpectralEmission,
+    SpectralOverlap,
+    InterferenceSummary,
+    aggregate_dbm,
+    annotate_interference,
+    dbm_to_mw,
+    effective_interference_dbm,
+    emission_for_ap,
+    interference_summary,
+    mw_to_dbm,
+    occupied_interval_mhz,
+    spectral_overlap,
+)
 
 __all__ = [
     "wavelength_m",
@@ -77,4 +91,16 @@ __all__ = [
     "MIN_RESOLUTION_M",
     "simulate_coverage",
     "combine_results",
+    "SpectralEmission",
+    "SpectralOverlap",
+    "InterferenceSummary",
+    "aggregate_dbm",
+    "annotate_interference",
+    "dbm_to_mw",
+    "effective_interference_dbm",
+    "emission_for_ap",
+    "interference_summary",
+    "mw_to_dbm",
+    "occupied_interval_mhz",
+    "spectral_overlap",
 ]

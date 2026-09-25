@@ -91,7 +91,7 @@ Representa el dominio. Entidades puras, sin lógica de RF ni de UI.
 | `obstacle.py` | **Fase 9:** `Obstacle` (footprint `Rect` en metros, material obligatorio, `kind`, `attenuation_override_db`, `blocks_signal`) + `OBSTACLE_KINDS`, `MIN/MAX_OBSTACLE_SIZE_M`, `MAX_OBSTACLE_ATTENUATION_DB`, `DEFAULT_OBSTACLE_MATERIAL_ID` (decisión BL) |
 | `space.py` | `Space`, `Floor` — zonas y pisos (`width_m`/`height_m`, `obstacles` en F9); `MIN_SPACE_SIZE_M` (F8) |
 | `project.py` | `Project`, `CoverageThresholds` — contenedor raíz + umbrales (RSSI/SOM/calidad + `snr_target_db`) |
-| `result.py` | `LinkEvaluation` (con `snr_db`/`noise_floor_dbm`), `SimulationResult`, `QualityClass`, `Verdict` |
+| `result.py` | `LinkEvaluation` (con `snr_db`/`noise_floor_dbm`) + **4 campos de interferencia F11 con default (decisión BX)**: `interference_evaluated`, `interference_dbm`, `interferer_count`, `dominant_interferer_ap_id` — información paralela; `rx_power_dbm`/`som_db`/`snr_db` intactos, `SimulationResult`, `QualityClass`, `Verdict` |
 
 ### `engine/`
 Motor de cálculo. Funciones puras que reciben geometría, parámetros y
@@ -106,21 +106,22 @@ devuelven resultados. **La UI solo consume estos resultados.**
 | `obstacles.py` | `trace_walls(..., openings=, obstacles=)` — atenuación por material/espesor, suma; **F8:** un cruce dentro de un hueco **sustituye** la pérdida del material por el override del hueco (decisión BG); `WallCrossing`/`CrossingLoss` llevan `opening_id`. **F9:** `obstacle_attenuation_db` (override sustituye material, BM), `trace_obstacles`, `_obstacle_candidates` (cruce interior estricto, un solo atravesamiento, BN), `ObstacleCrossing`/`ObstacleTraceResult.obstacles_crossed` y `CrossingLoss.obstacle_id` |
 | `coverage_grid.py` | **Fase 4:** malla regular de puntos (metros), límites |
 | `simulator.py` | `simulate_coverage` — un punto o el grid completo; valida ancho×banda (F7) y **canal×banda vía `channel_for_band` (F10)**, calcula stats con SNR y propaga `openings`/`obstacles` a `trace_walls` (F8/F9) |
-| `combine.py` | Combinación de resultados multi-AP (Fase 5) con stats de SNR del ganador (F7) |
+| `combine.py` | Combinación de resultados multi-AP (Fase 5) con stats de SNR del ganador (F7); **F11:** no cambia — sigue eligiendo mayor RSSI y recibe los resultados **ya anotados** con interferencia por la sesión (BX) |
+| `interference.py` | **Fase 11 (nuevo):** modelo espectral puro — `occupied_interval_mhz`, `spectral_overlap` (semiabiertos, ratio sobre el ancho menor, BY), `effective_interference_dbm` (PSD plano `P_rx + 10·log10(overlap/W)`, None si overlap=0, BZ), `dbm_to_mw`/`mw_to_dbm`/`aggregate_dbm` (suma lineal, None vacío, CA — única definición en el árbol), `SpectralEmission`/`emission_for_ap` (centro del catálogo F10), `annotate_interference` (reutiliza P_rx, agrupa por banda, dominante con empate ⇒ menor id, CB/CA) e `interference_summary` (CC). Sin SINR/hilos/caché (CD/CE) |
 
-### `ui/` (Fase 3–10)
+### `ui/` (Fase 3–11)
 Presentación. Sin fórmulas RF; solo pintar, capturar eventos y llamar
 al engine / `EditorSession`.
 
 | Módulo | Responsabilidad |
 |---|---|
-| `session.py` | `EditorSession`: operaciones puras sobre `Project` (testeable sin Tk): editor + guardar/abrir/nuevo + dirty state + `heatmap_metric`/`apply_rf_settings` (F7) + **CRUD de `Space`/`Opening` (F8)** + **CRUD de `Obstacle` (F9)**: `add_obstacle`/`set_obstacle_properties`/`move_obstacle` (clamps, `replace` revalida el dominio, **invalidan heatmap y dirty** — BP), passthrough de `openings`/`obstacles` a `simulate_coverage` + **configuración RF por AP (F10)**: `set_ap_rf_config` (triple atómico validado en `core.channel`, dirty/invalidación solo con cambio real — BU) y `resolve_band_for_ap` (`ap.band_id` o la de la corrida o la activa — BS), usado por `run_heatmap`/`run_simulation` |
+| `session.py` | `EditorSession`: operaciones puras sobre `Project` (testeable sin Tk): editor + guardar/abrir/nuevo + dirty state + `heatmap_metric`/`apply_rf_settings` (F7) + **CRUD de `Space`/`Opening` (F8)** + **CRUD de `Obstacle` (F9)**: `add_obstacle`/`set_obstacle_properties`/`move_obstacle` (clamps, `replace` revalida el dominio, **invalidan heatmap y dirty** — BP), passthrough de `openings`/`obstacles` a `simulate_coverage` + **configuración RF por AP (F10)**: `set_ap_rf_config` (triple atómico validado en `core.channel`, dirty/invalidación solo con cambio real — BU) y `resolve_band_for_ap` (`ap.band_id` o la de la corrida o la activa — BS), usado por `run_heatmap`/`run_simulation` + **interferencia (F11)**: `_interference_context_aps` (vecinos con canal en la misma banda, CB), `_spectral_emissions`, anotación **antes** de combinar en `run_heatmap`/`run_simulation` con puerta `len(results) >= 2` + `ap.channel is not None` (BX/CB), métrica `interference` validada contra `HEATMAP_METRICS` del renderer (CC), `ap_interference_lines` (panel, solo datos reales) y header de `heatmap_stats_text` |
 | `viewport.py` | **Único** conversor metros ↔ píxeles (escala isotrópica) |
-| `editor_canvas.py` | Canvas: capas floor → heatmap → spaces → **obstacles (F9)** → walls (con huecos) → APs → leyenda (RSSI o SNR); hit-test AP → cliente → openings → **obstacles** → paredes → espacios (F9); tools `Zona` y **`Objeto` con dos clics + preview (F8/F9)**; arrastre de obstáculo con clamp (F9); **etiqueta `CH n · w MHz` bajo el AP solo si tiene canal configurado (F10, BU)** |
-| `coverage_renderer.py` | `SimulationResult` → imagen Pillow RGBA + leyenda + stats; escalas `rssi`/`snr` (F7, parámetro `metric`) |
-| `app.py` | Ventana principal, **debounce ~150 ms** del heatmap, menú **Archivo** (Nuevo/Abrir/Guardar/Guardar como) y confirmación de cambios sin guardar; tecla `e` → tool Zona, tecla **`o` → tool Objeto (F9)**, Escape limpia trazos (F8/F9) |
-| `panels/toolbar.py` | Herramienta (incl. **Zona** y **Objeto**, F8/F9), banda, resolución, toggle heatmap, selector de AP, **métrica RSSI/SNR y Config RF… (F7)**, **Dimensiones…** (F8 renombra el viejo `Espacio…`) |
-| `panels/properties.py` | Propiedades del elemento + resumen simulación/heatmap + bloque RF global (F7) + **Espacio (nombre/función) y Apertura (tipo/offsets) + `+ Puerta`/`+ Ventana` desde la pared (F8)** + **marco Objeto: nombre/tipo/material/override `band_id=dB` (F9)** + **marco «Radio del AP»: banda/canal/ancho desde `core.channel`, frecuencia y estándar de solo lectura, Aplicar atómico con error controlado (F10, BU)** |
+| `editor_canvas.py` | Canvas: capas floor → heatmap → spaces → **obstacles (F9)** → walls (con huecos) → APs → leyenda (RSSI, SNR o **Interferencia — F11**); hit-test AP → cliente → openings → **obstacles** → paredes → espacios (F9); tools `Zona` y **`Objeto` con dos clics + preview (F8/F9)**; arrastre de obstáculo con clamp (F9); **etiqueta `CH n · w MHz` bajo el AP solo si tiene canal configurado (F10, BU)** |
+| `coverage_renderer.py` | `SimulationResult` → imagen Pillow RGBA + leyenda + escalas; registro único `HEATMAP_METRICS = ("rssi", "snr", "interference")` (F11, CC) + escala/leyenda/rama de pintado de interferencia (`interference_to_color`, dirección invertida, `None` ⇒ «sin interferencia»); escalas `rssi`/`snr` (F7) |
+| `app.py` | Ventana principal, **debounce ~150 ms** del heatmap, menú **Archivo** (Nuevo/Abrir/Guardar/Guardar como) y confirmación de cambios sin guardar; tecla `e` → tool Zona, tecla **`o` → tool Objeto (F9)**, Escape limpia trazos (F8/F9); **`properties.refresh()` tras simular y tras el heatmap (F11)** para que el bloque de interferencia del panel esté siempre al día |
+| `panels/toolbar.py` | Herramienta (incl. **Zona** y **Objeto**, F8/F9), banda, resolución, toggle heatmap, selector de AP, **métrica RSSI/SNR/Interferencia y Config RF… (F7 + F11)**, **Dimensiones…** (F8 renombra el viejo `Espacio…`) |
+| `panels/properties.py` | Propiedades del elemento + resumen simulación/heatmap + bloque RF global (F7) + **Espacio (nombre/función) y Apertura (tipo/offsets) + `+ Puerta`/`+ Ventana` desde la pared (F8)** + **marco Objeto: nombre/tipo/material/override `band_id=dB` (F9)** + **marco «Radio del AP»: banda/canal/ancho desde `core.channel`, frecuencia y estándar de solo lectura, Aplicar atómico con error controlado (F10, BU)** + **bloque «Interferencia» del AP (F11, CC): `session.ap_interference_lines` con datos reales o mensajes honestos de ausencia** |
 | `dialogs/rf_dialog.py` | **F7:** diálogo de configuración RF (ruido, objetivos, estándar, ancho); captura `ValueError` |
 
 ### `persistence/` (Fase 6, endurecida en 6.1)
@@ -181,6 +182,16 @@ UI (metros)                    engine                              UI (píxeles)
    (panel y etiqueta del lienzo). Heatmap con APs de banda mixta ⇒
    `combine_results` rechaza (contrato F5) y el error queda visible en
    el panel.
+8. **Fase 11 (interferencia, paralela):** si el AP deseado tiene canal,
+   la sesión simula también a los vecinos con canal de **su misma banda**
+   (`_interference_context_aps`) y llama a
+   `engine.interference.annotate_interference(resultados, emisiones)`
+   que, **reutilizando los P_rx ya calculados**, anota cada evaluación
+   con su `interference_dbm` agregado (dominante, recuento). La anotación
+   ocurre **antes** de `combine_results` (el ganador lleva sus datos) y
+   solo con `len(results) >= 2` (los proyectos/APs sin canal no pagan
+   coste ni cambian). La UI pinta la métrica `interference` y el panel
+   del AP vía `ap_interference_lines`. **No hay SINR** (F12).
 
 ### `trace_walls` (responsabilidad clave)
 
@@ -221,6 +232,14 @@ trace_walls(source, target, walls, band_id, openings=(), obstacles=())
   vista sobre el mismo `SimulationResult` (invalida el heatmap pero no
   marca `dirty` ni se persiste); la leyenda, el título, la escala de
   color y las stats cambian con la métrica.
+- **Fase 11:** selector `Métrica:` añade `Interferencia` (id
+  `interference`, fuera del enum F7 congelado — se valida contra
+  `HEATMAP_METRICS` del renderer, decisión CC). Escala invertida
+  (más alto = peor, `None` ⇒ color de «sin interferencia»), leyenda
+  propia y stats con el resumen agregado. La anotación se hace en
+  cualquier corrida con contexto (selector individual con APs vecinos
+  con canal, o «Todos los AP» con ≥ 2 resultados), no solo con esa
+  métrica visible.
 - Invalidación + debounce ~150 ms (F4) reutilizada en F5/F7: mover AP,
   banda, pared, dimensión, resolución, agregar/eliminar AP, cambiar
   selector de AP o métrica.
@@ -230,9 +249,11 @@ trace_walls(source, target, walls, band_id, openings=(), obstacles=())
   AP ganador por punto.
 - Disclaimer: estimación predictiva, no simulación EM.
 - 6 GHz: error visible (`MaterialAttenuationError`), sin fallback.
-- **No** hay interferencia, SINR, roaming ni optimización de canales:
-  el canal configurado en F10 es metadata de planeamiento y **no**
-  cambia ninguna métrica del heatmap (regresión F9 byte-idéntica).
+- **F11:** hay información de interferencia **paralela** (nuevos campos
+  de `LinkEvaluation`, decisión BX) pero **no** hay SINR, CCA/CSMA,
+  roaming ni optimización de canales (decisión CD): el canal configurado
+  en F10 sigue sin cambiar ninguna métrica histórica (A/B byte-idéntico;
+  regresión F9/F10 intactas).
 
 ### Persistencia (Fase 6)
 
@@ -300,6 +321,10 @@ trace_walls(source, target, walls, band_id, openings=(), obstacles=())
   exige `band_id` y pertenecer al catálogo de esa banda
   (`core.channel`); la frecuencia central del canal **nunca** viaja en
   el archivo (se deriva al abrir).
+- **F11 (misma versión 1, decisión CD):** la interferencia **no se
+  persiste** — vive solo en memoria de resultados (`LinkEvaluation`).
+  Ni `persistence/` ni el archivo mencionan `interference`; guardar,
+  abrir y los archivos F1–F10 son byte-idénticos a los de F10.
 
 ## Unidades
 
@@ -351,7 +376,16 @@ Los píxeles **no existen** en `core/` ni `engine/`.
   «Radio del AP» + etiqueta de canal en el lienzo (BU), `band_id`
   opcional en schema v1 (BV), A/B y regresión F9 byte-idéntica; la
   física no cambió (BW).
-- **Futuro:** interferencia/co-adyacencia de canales (F11), edición de
+- **Fase 11 (hecha):** interacción espectral e interferencia —
+  `engine/interference.py` (ocupación `centro ± ancho/2`, solapamiento
+  semiabierto BY, contribución con PSD plano BZ, agregación lineal con
+  determinismo CA), 4 campos paralelos en `LinkEvaluation` anotados por
+  la sesión **antes** de combinar (BX/CB), métrica `interference` +
+  leyenda + bloque del panel (CC), sin SINR ni persistencia nueva
+  (CD), sin caché/hilos (CE); A/B de RSSI byte-idéntico y regresiones
+  F9/F10 intactas.
+- **Futuro:** **F12** — SINR/CCA con la base de F11
+  (`interference_dbm` + ruido ⇒ métrica de calidad), edición de
   extremos de pared, CAD (snaps, snaps angulares, booleanos).
 - **Futuro 3D:** `Floor.elevation_m` ya existe; geometría 2D no cambia.
 - **Otras bases de datos / API / nube:** la capa `persistence/` es el
