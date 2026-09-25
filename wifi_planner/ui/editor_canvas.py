@@ -375,6 +375,17 @@ class EditorCanvas(tk.Canvas):
                 fill=theme.TEXT_DIM, font=("Segoe UI", 7),
             )
 
+            if is_sel:
+                # Manijas en los extremos: avisan de que se pueden arrastrar
+                # (mismo radio que ``_hit_wall_endpoint``) — Fase 15.
+                half = 4
+                for endpoint in (wall.segment.start, wall.segment.end):
+                    ex, ey = vp.world_to_screen(endpoint)
+                    self.create_rectangle(
+                        ex - half, ey - half, ex + half, ey + half,
+                        fill=theme.ACCENT, outline=theme.BG_CANVAS, width=1,
+                    )
+
     def _draw_wall_span(
         self, wall, from_m: float, to_m: float, color: str, width: int
     ) -> None:
@@ -408,6 +419,14 @@ class EditorCanvas(tk.Canvas):
                     else ""
                 ),
             )
+            if is_sel:
+                # Anillo de selección: el cambio de tono solo no basta
+                # para ver qué AP está activo (Fase 15).
+                ring = 16
+                self.create_oval(
+                    sx - ring, sy - ring, sx + ring, sy + ring,
+                    outline=theme.ACCENT, width=2, dash=(4, 3),
+                )
 
         for client in view.clients:
             sx, sy = vp.world_to_screen(client.position)
@@ -772,6 +791,12 @@ class EditorCanvas(tk.Canvas):
                 self.render_project()
 
     def _on_press(self, event) -> None:
+        # Un press SIEMPRE arranca un gesto nuevo: si el release anterior
+        # no llegó (ventana desactivada, doble click, etc.) cerramos el
+        # gesto pendiente y descartamos los flags de arrastre viejos, para
+        # que no secuestren este movimiento y se mueva otro objeto (F15).
+        self.session.commit_edit()
+        self.reset_interaction()
         world = self._snap_world(self._cursor_world(event))
         tool = self.session.tool
 

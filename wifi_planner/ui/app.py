@@ -23,6 +23,7 @@ from ui.session import (
     GRID_STEP_CHOICES,
     EditorSession,
     HEATMAP_ALL_APS,
+    SelectionKind,
     Tool,
 )
 from ui.viewport import Viewport
@@ -58,6 +59,8 @@ class WifiPlannerApp(tk.Tk):
         )
         self._heatmap_debounce_ms = int(heatmap_debounce_ms)
         self._heatmap_after_id = None
+        # Última selección sincronizada con el selector de cobertura (F15).
+        self._last_selection_key: tuple | None = None
 
         self._apply_theme()
         self._build_menu()
@@ -665,8 +668,34 @@ class WifiPlannerApp(tk.Tk):
         self.toolbar.set_band_label(
             BAND_LABEL_BY_ID.get(self.session.band_id, "2.4 GHz")
         )
+        # Fase 15: si la selección es un AP, la cobertura mostrada es la suya.
+        self._sync_heatmap_ap_with_selection()
         self._refresh_ap_selector()
         self._update_title()
+        self._schedule_heatmap()
+
+    def _sync_heatmap_ap_with_selection(self) -> None:
+        """Al seleccionar un AP se muestra SU cobertura (Fase 15).
+
+        El selector «AP:» de la toolbar es la fuente del ámbito del
+        heatmap; aquí solo se cambia cuando la selección pasa a ser un
+        AP concreto, para que «cada AP muestre su área de cobertura» sin
+        pisar la elección manual del usuario en cualquier otro caso.
+        """
+        selection = self.session.selection
+        key = None if selection is None else (selection.kind, selection.entity_id)
+        if key == self._last_selection_key:
+            return
+        self._last_selection_key = key
+        if selection is None or selection.kind != SelectionKind.AP:
+            return
+        if self.session.heatmap_ap_id == selection.entity_id:
+            return
+        try:
+            self.session.set_heatmap_ap(selection.entity_id)
+        except KeyError:
+            return
+        self._refresh_ap_selector()
         self._schedule_heatmap()
 
     # ------------------------------------------------------------------
