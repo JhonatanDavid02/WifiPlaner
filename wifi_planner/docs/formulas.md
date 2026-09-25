@@ -400,3 +400,68 @@ points_meeting_snr_target, snr_ratio = points / point_count
 En combinación multi-AP el SNR proviene del AP **ganador por RSSI**
 (decisión BB): nunca se promedian SNR entre APs (eso sería
 interferencia encubierta, fuera del alcance de F7).
+
+---
+
+## 12. Canales Wi-Fi (Fase 10): número lógico ↔ frecuencia central derivada
+
+### Catálogo por familia (fuente única: `core/channel.py`)
+
+El **número de canal** es un identificador lógico; la **frecuencia
+central** es un valor físico que se **deriva** (nunca se almacena ni se
+recibe del archivo). Fórmulas (decisión BQ):
+
+```
+2.4 GHz:  f_c(n) = 2412 + 5·(n−1) MHz   para n = 1…13   (n = 14 ⇒ 2484)
+5 GHz:    f_c(36…64)  = 5180 + 20·((n−36)/4)
+          f_c(100…144)= 5500 + 20·((n−100)/4)
+          f_c(149…161)= 5745 + 20·((n−149)/4)
+          f_c(165)    = 5825
+6 GHz:    f_c(n) = 5950 + 5·n   para n = 1, 5, 9, …, 233  (233 ⇒ 7115)
+```
+
+La **familia** de una banda se decide con la misma frontera que los
+anchos de canal (decisión AY): `f < 3000 MHz` → 2.4 GHz;
+`3000 ≤ f < 5925` → 5 GHz; `f ≥ 5925` → 6 GHz. Referencias: canal 6 =
+2437 MHz, canal 36 = 5180 MHz, canal 37 = 6135 MHz (= banda 6 por
+defecto).
+
+Referencia por banda (`default_channel`): el canal cuyo centro coincide
+con `FrequencyBand.frequency_mhz` (2437 → 6, 5180 → 36, 6135 → 37);
+si no hay coincidencia exacta, el más cercano (empate → menor número).
+
+### El canal NO entra en ninguna fórmula de propagación
+
+```
+FSPL(d) = 20·log10(d) + 20·log10(f_banda) + 32.44     (sección 2)
+P_rx    = P_tx + G_tx − L_tx + G_rx − L_rx − FSPL − Σ pérdidas   (sección 3)
+```
+
+`f_banda` es **`FrequencyBand.frequency_mhz`** (2437 / 5180 / 6135).
+La frecuencia central del canal elegido no aparece en FSPL, en el
+presupuesto de enlace, en SOM, en SNR ni en la calidad: cambiar un AP
+del canal 36 al 40 produce evaluaciones **idénticas** (decisión BR;
+probado por el test A/B de `tests/test_channels.py` y por el snapshot
+`f10_regression_snapshot.py`). Lo mismo vale para el ancho de canal
+(sección 11): es metadato de configuración.
+
+### Centro independiente del ancho; validación del triple
+
+- El centro **no cambia con el ancho**: canal 36 con 80 MHz ⇒ centro
+  5180 MHz (el ancho define el rastro ocupado, no el centro).
+- El triple `(banda, canal, ancho)` se valida en un solo punto
+  (`validate_channel_config`, decisión BT): el canal debe pertenecer
+  al catálogo de la familia de la banda y el ancho a la regla de
+  familia de la sección 11 (2.4 → 20/40; 5/6 → 20/40/80/160).
+- Los números **se solapan entre familias** (149 y 165 existen en
+  5 GHz y en 6 GHz con centros distintos): la validación es siempre
+  contextual al par (banda, canal).
+
+### Configuración por AP (Fase 10)
+
+`AccessPoint.band_id + channel + radio.channel_width_mhz` declaran dónde
+transmite cada AP. La simulación resuelve
+`ap.band_id o banda de la corrida o banda activa` (decisión BS); los
+proyectos sin `band_id` (F1–F9) se comportan exactamente como antes.
+La frecuencia central derivada es **metadata visible** (panel y
+lienzo), no un parámetro de la fórmula.

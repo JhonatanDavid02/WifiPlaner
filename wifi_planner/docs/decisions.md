@@ -909,6 +909,157 @@ empíricamente (sondas de parser, invariantes y residuales).
 
 ---
 
+## Fase 10 — Canales y configuración RF por AP
+
+### Decisión BQ — `core/channel.py`: fuente única del catálogo de canales
+
+- **Decisión:** el catálogo número lógico ↔ frecuencia central vive en
+  `core/channel.py` como `WifiChannel` frozen dataclass
+  (`number`, `center_frequency_mhz`) con tres familias generadas por
+  fórmula (nunca tablas escritas a mano):
+  - **2.4 GHz:** canales 1–13 con centro `2412 + 5·(n−1)` MHz y el
+    canal 14 en 2484 MHz (numeración IEEE/JP).
+  - **5 GHz:** bloques de 20 MHz — `36…64 → 5180 + 20k`,
+    `100…144 → 5500 + 20k`, `149…161 → 5745 + 20k`, `165 → 5825`.
+  - **6 GHz:** `n = 1, 5, 9, …, 233` con centro `5950 + 5·n` MHz
+    (ch 233 = 7115 MHz; ch 37 = 6135 MHz = banda 6 por defecto).
+- **API:** `channels_for_frequency(f)`,
+  `channel_numbers_for_frequency(f)` (selectores de la UI),
+  `channel_for_band(band, n)`, `default_channel(band)`,
+  `validate_channel_config(band, n, width)` y
+  `MAX_CHANNEL_NUMBER = 233`. La **familia** se decide con la MISMA
+  frontera que los anchos de canal (AY): `f < 2437+…` → 2.4,
+  `< 5925` → 5, `≥ 5925` → 6 (se reutilizan los límites privados de
+  `core/radio.py`, sin duplicar fronteras).
+- **Fuente única:** ni `ui/`, ni `engine/`, ni `persistence/`,
+  ni `config/` contienen cifras de frecuencia (2412, 5180, 5950…):
+  todo consulta este módulo. La UI solo muestra lo que el catálogo
+  devuelve.
+- **Qué NO:** sin tablas de canales por país/regulación, sin canales
+  de 5/10 MHz, sin DFS/TPC ni listas dinámicas; el catálogo es el
+  estándar IEEE de los tres espectros del proyecto.
+
+### Decisión BR — Canal ≠ frecuencia; la frecuencia central se deriva y nunca entra en FSPL
+
+- **Decisión:** `number` es un **identificador lógico** y
+  `center_frequency_mhz` un **valor físico derivado** del catálogo. La
+  frecuencia central **no se persisten jamás**: se recalcula al leer,
+  con lo que es imposible una inconsistencia canal↔frecuencia en el
+  archivo.
+- **El canal NO altera la física (crítico A/B):** FSPL, pérdida por
+  obstáculos, RSSI/P_rx, SOM, SNR, veredicto y calidad usan SOLO
+  `FrequencyBand.frequency_mhz` (y el resto del link budget). Cambiar
+  un AP del canal 36 al 40 en la misma banda produce evaluaciones
+  **idénticas** — verificado por test A/B (`test_channels.py`) y por
+  el snapshot `f10_regression_snapshot.py` (configurado vs baseline y
+  swap 36→40, RF byte-idéntica). El ancho de canal (AY) tampoco entra
+  en el presupuesto de enlace.
+- **Independiente del ancho:** el centro del canal no cambia con el
+  ancho (canal 36 con 80 MHz ⇒ centro 5180 MHz; el ancho define el
+  rastro, no el centro).
+- **Razón:** en Fase 10 el canal es **configuración/metadata** para
+  planificar y para Fase 11; meterlo en la propagación inventaría
+  física no aprobada por el spec.
+
+### Decisión BS — Banda + canal por AP (`band_id` + `channel`), un radio → una banda
+
+- **Decisión:** `AccessPoint` gana `band_id: str | None` junto al
+  `channel: int | None` que ya existía como placeholder (F1). El AP
+  declara **en qué banda y canal transmite**; la banda activa del
+  editor sigue siendo el valor por defecto y el selector del toolbar
+  no cambia de semantics (sigue configurando la banda de los APs sin
+  banda propia y la corrida puntual).
+- **Resolución en simulación:** `resolve_band_for_ap(ap, band_id)` →
+  `ap.band_id or banda_resuelta_de_la_corrida or banda_activa`.
+  Proyectos F1–F9 (sin `band_id`) producen resultados **idénticos** a
+  F9. `run_heatmap`/`run_simulation` usan la banda resuelta por AP.
+- **Invariante:** `channel` explícito ⇒ `band_id` obligatorio (validado
+  en `AccessPoint.__post_init__` y en el lector). Un AP no puede
+  declarar canal «al aire» sin decir en qué banda.
+- **Sin multi-radio:** un AP = un radio = una banda (el spec lo
+  descarta explícitamente). Un heatmap con APs de banda mixta sigue
+  siendo **rechazado** por `combine_results` (contrato F5 congelado,
+  dos tests existentes lo exigen); el error queda visible en el panel
+  vía `last_heatmap_error`. Ese límite es el puente reportado a F11+.
+
+### Decisión BT — Un único punto de validación del triple (banda, canal, ancho)
+
+- **Decisión:** `core.channel.validate_channel_config(band, channel,
+  width)` valida: (1) el canal pertenece al catálogo de la familia de
+  la banda (`channel_for_band`), (2) el ancho pasa la regla de familia
+  de F7 (`allowed_channel_widths_mhz`: 2.4 → 20/40; 5/6 →
+  20/40/80/160) sin duplicar esa lógica. Devuelve el `WifiChannel`
+  validado para derivar el centro.
+- **Llamadores:** la sesión (`set_ap_rf_config`), la persistencia al
+  leer y el guard del engine (`simulate_coverage` valida canal × banda
+  además del ancho × banda de F7). La UI **no** valida: arma el triple
+  y delega; los errores vuelven como `ValueError` → `showerror`.
+- **`apply_rf_settings` (F7) no gana validación de canal × banda:** su
+  contrato congelado es sincronizar `radio.channel_width_mhz` aunque
+  la banda activa no admita ese ancho (test F7 lo exige); el rechazo
+  ocurre al simular, igual que hoy.
+- **Nota de numeración:** existen números válidos en dos familias
+  (149/153/157/161/165 existen en 5 GHz y en 6 GHz con centros
+  distintos): por eso la validación es SIEMPRE contextual al par
+  (banda, canal) y nunca «número suelto».
+
+### Decisión BU — Panel «Radio del AP» + etiqueta de canal en el lienzo
+
+- **Decisión:** marco **«Radio del AP (Fase 10)»** en el panel de
+  propiedades (bajo Selección): Banda (nombres del catálogo
+  `project.bands`), Canal y Ancho — listas dinámicas desde
+  `core.channel`/regla de familia —, más Frecuencia central (solo
+  lectura, derivada) y Estándar (solo lectura, F7). Botón
+  **«Aplicar radio»** = commit atómico vía `session.set_ap_rf_config`
+  (valida primero; errores → `messagebox`, sin mutación).
+  Cambiar la banda repuebla canales/anchos y selección por defecto
+  (`default_channel`: 6 / 36 / 37).
+- **Bloque Selección** ampliado con `Banda:` (configurada o «—
+  (activa: …)»), `Canal:` (`— (sin configurar)` si es `None`, con
+  centro derivado) y `Estándar:`; el lienzo dibuja
+  `CH n · w MHz` bajo el AP **solo si** `ap.channel` está configurado
+  (sin ruido por defecto).
+- **Invalidación:** `set_ap_rf_config` llama a `invalidate_heatmap()`
+  (invalidación genérica F4) + `mark_dirty()` **solo si hay cambio
+  real** de `band_id`/`channel`/`width` (re-aplicar lo mismo no marca
+  nada). El canal no altera RSSI, pero la banda configura la
+  frecuencia de simulación del AP y el cambio es persistible; el
+  recálculo con debounce lo decide la app como cualquier edición.
+
+### Decisión BV — `access_points[].band_id` opcional en schema v1 (canal ya existía)
+
+- **Decisión:** la clave `band_id` es **opcional al leer** (ausente ⇒
+  `None` ⇒ banda activa: los archivos F1–F9 abren sin migración) y
+  **siempre se escribe** al guardar. El `channel` existente desde F6
+  se conserva con su misma forma (`_require_int`), pero AHORA el lector
+  exige: `band_id` presente en `project.bands`; si hay `channel`
+  explícito, `band_id` obligatorio y el canal debe pertenecer al
+  catálogo de esa banda (`channel_for_band` → `ProjectFormatError`).
+  Frecuencia central: nunca en el JSON. `schema_version` sigue en
+  **1** (claves opcionales, misma fórmula que BE/BG/BO).
+- **Ancho × banda NO se valida al cargar** (contrato F7: la
+  configuración de ancho puede existir con la banda activa antigua);
+  se valida al simular y al aplicar desde el panel.
+- **Razón:** se migra un placeholder F1 a configuración real sin
+  romper ningún archivo existente ni tocar la versión de esquema.
+
+### Decisión BW — Frontera F10 / F11: sin interferencia, SINR ni optimización
+
+- **F10 = conocimiento y configuración:** catálogo, validación, UI y
+  persistencia de banda+canal+ancho. La física (FSPL, SOM, RSSI, SNR,
+  calidad, `MIN_FSPL_DISTANCE_M`, comportamiento 6 GHz) queda
+  **intacta** — probado por la regresión F9 byte-idéntica
+  (SHA `00E306ADB4EBD5750B9A1E9783925083C43AEC1AD980719CECB96C7C3EDF982B`).
+- **F11+ (NO implementado en F10):** colisión/co-adyacencia de
+  canales, energía recibida entre emisores, CCA/CSMA, penalización
+  por solape, selección/optimización de canal, capacidad y
+  planificación de espectro. Ningún `.py` de F10 contiene ese
+  vocabulario (lo prohíbe `audit_f10.py`).
+- **Razón:** el spec de F10 es explícito: el canal NO cambia RSSI y
+  la capa de conflicto/interferencia es la fase siguiente.
+
+---
+
 ## Discrepancias encontradas (no resueltas silenciosamente)
 
 ### 1. Distancias `d_max` contradictorias

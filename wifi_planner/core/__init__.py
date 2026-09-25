@@ -11,6 +11,7 @@ Reglas:
 
 from core.geometry import Point2D, Rect, Segment2D
 from core.band import FrequencyBand
+from core.channel import WifiChannel, channel_for_band, validate_channel_config
 from core.material import Material
 from core.radio import RadioConfiguration
 from core.access_point import AccessPoint
@@ -31,6 +32,9 @@ __all__ = [
     "Rect",
     "Segment2D",
     "FrequencyBand",
+    "WifiChannel",
+    "channel_for_band",
+    "validate_channel_config",
     "Material",
     "RadioConfiguration",
     "AccessPoint",

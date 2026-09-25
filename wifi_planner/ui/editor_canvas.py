@@ -346,7 +346,17 @@ class EditorCanvas(tk.Canvas):
                 and selected.kind == SelectionKind.AP
                 and selected.entity_id == ap.id
             )
-            self._draw_ap(sx, sy, theme.AP_SELECTED if is_sel else theme.AP_COLOR, ap.id)
+            self._draw_ap(
+                sx,
+                sy,
+                theme.AP_SELECTED if is_sel else theme.AP_COLOR,
+                ap.id,
+                subtitle=(
+                    f"CH {ap.channel} · {ap.radio.channel_width_mhz:g} MHz"
+                    if ap.channel is not None
+                    else ""
+                ),
+            )
 
         for client in self.session.project.clients:
             sx, sy = vp.world_to_screen(client.position)
@@ -413,13 +423,20 @@ class EditorCanvas(tk.Canvas):
             self.create_line(sx1, sy1, sx2, sy2, fill=theme.GRID_COLOR)
             y += step_m
 
-    def _draw_ap(self, x: float, y: float, color: str, label: str) -> None:
+    def _draw_ap(
+        self, x: float, y: float, color: str, label: str, subtitle: str = ""
+    ) -> None:
         # Marcas tipo antena
         for dx, dy in ((-10, -10), (10, -10), (-10, 10), (10, 10), (0, -12), (0, 12)):
             self.create_line(x, y, x + dx, y + dy, fill=color, width=1)
         r = 6
         self.create_oval(x - r, y - r, x + r, y + r, fill=color, outline=theme.BG_CANVAS)
         self.create_text(x, y + 18, text=label, fill=theme.TEXT_LABEL, font=("Segoe UI", 7))
+        # Fase 10: canal/ancho SOLO si el AP tiene canal configurado (BU).
+        if subtitle:
+            self.create_text(
+                x, y + 30, text=subtitle, fill=theme.TEXT_LABEL, font=("Segoe UI", 6)
+            )
 
     # ------------------------------------------------------------------
     # Snap

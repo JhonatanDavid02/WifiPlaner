@@ -12,6 +12,7 @@ from enum import Enum
 from typing import Iterable
 
 from core.access_point import AccessPoint
+from core.channel import validate_channel_config
 from core.client import ClientDevice
 from core.geometry import Point2D, Rect, Segment2D
 from core.material import Material
@@ -364,6 +365,66 @@ class EditorSession:
             self.invalidate_heatmap()
             self.mark_dirty()
 
+    # ------------------------------------------------------------------
+    # Configuración RF por AP (Fase 10: banda + canal + ancho)
+    # ------------------------------------------------------------------
+
+    def resolve_band_for_ap(
+        self, ap: AccessPoint, default_band_id: str | None = None
+    ):
+        """Banda con la que se simula un AP (decisión BS).
+
+        Usa ``ap.band_id`` si el AP tiene banda configurada; si no, la
+        banda activa (o ``default_band_id`` durante una corrida). Los
+        proyectos F1–F9 no definen ``band_id`` ⇒ resultado idéntico al de
+        F9. La frecuencia de FSPL sigue siendo la de la banda resuelta;
+        el canal del AP NO modifica la física (decisión BR/BW).
+
+        Raises:
+            KeyError: si la banda referenciada no existe.
+        """
+        band_id = ap.band_id or default_band_id or self.band_id
+        return self.project.get_band(band_id)
+
+    def set_ap_rf_config(
+        self, ap_id: str, *, band_id: str, channel: int, width_mhz: int
+    ) -> None:
+        """Configura banda + canal + ancho de un AP de forma atómica (F10).
+
+        El triple se valida contra el catálogo de canales
+        (``core.channel.validate_channel_config``, decisión BT) ANTES de
+        tocar el proyecto: si algo falla, nada cambia y no se marca
+        ``dirty``. Si los valores son idénticos a los actuales no hay
+        mutación (decisión BU: dirty solo si el proyecto cambió).
+
+        Invalida el heatmap con la invalidación genérica del pipeline
+        F4: el canal en sí no altera RSSI (decisión BR), pero la banda
+        configurada sí determina la frecuencia de simulación del AP y
+        el cambio es configuración persistible.
+
+        Raises:
+            KeyError: si el AP o la banda no existen.
+            ValueError: si el canal o el ancho no son válidos para la banda.
+        """
+        for index, ap in enumerate(self.project.access_points):
+            if ap.id == ap_id:
+                band = self.project.get_band(band_id)  # valida existencia
+                validate_channel_config(band, channel, width_mhz)
+                if (
+                    ap.band_id == band_id
+                    and ap.channel == channel
+                    and ap.radio.channel_width_mhz == width_mhz
+                ):
+                    return  # sin cambio real: sin dirty ni invalidación
+                radio = replace(ap.radio, channel_width_mhz=int(width_mhz))
+                self.project.access_points[index] = replace(
+                    ap, band_id=band_id, channel=int(channel), radio=radio
+                )
+                self.invalidate_heatmap()
+                self.mark_dirty()
+                return
+        raise KeyError(f"Access Point no encontrado: {ap_id}")
+
     def set_heatmap_enabled(self, enabled: bool) -> None:
         self.heatmap_enabled = bool(enabled)
         if enabled:
@@ -456,7 +517,7 @@ class EditorSession:
         # Valida ANTES de mutar: una banda desconocida no debe dejar la
         # sesión con band_id inválido, y un cambio real de banda es
         # configuración persistible ⇒ dirty (decisión AN, F6.1).
-        band = self.project.get_band(band_id)
+        self.project.get_band(band_id)
         if band_id != self.band_id:
             self.band_id = band_id
             self.mark_dirty()
@@ -471,11 +532,14 @@ class EditorSession:
 
         results: list[SimulationResult] = []
         for ap in aps:
+            # Fase 10: cada AP se simula en su banda configurada (o en la
+            # activa si no la tiene). Con APs de banda mixta,
+            # ``combine_results`` rechaza combinar (contrato F5 intacto).
             results.append(
                 simulate_coverage(
                     project=self.project,
                     access_point=ap,
-                    frequency_band=band,
+                    frequency_band=self.resolve_band_for_ap(ap, band_id),
                     sample_points=points,
                     walls=self.floor.walls,
                     openings=self.floor.openings,
@@ -1146,7 +1210,7 @@ class EditorSession:
         band_id = band_id or self.band_id
         # Misma regla que run_heatmap: validar antes de mutar + dirty
         # si la banda persistible cambia (decisión AN, F6.1).
-        band = self.project.get_band(band_id)
+        self.project.get_band(band_id)
         if band_id != self.band_id:
             self.band_id = band_id
             self.mark_dirty()
@@ -1162,7 +1226,8 @@ class EditorSession:
         result = simulate_coverage(
             project=self.project,
             access_point=ap,
-            frequency_band=band,
+            # Fase 10: banda configurada del AP o la activa (decisión BS).
+            frequency_band=self.resolve_band_for_ap(ap, band_id),
             sample_points=points,
             walls=self.floor.walls,
             openings=self.floor.openings,

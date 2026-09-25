@@ -33,7 +33,7 @@ no es una simulación electromagnética completa.
 
 ```
 ┌─────────────────────────────────────────────┐
-│  UI (Fase 3–8)                              │
+│  UI (Fase 3–10)                             │
 │  editor 2D (Tkinter), heatmap (Pillow),     │
 │  viewport (metros→píxeles), paneles,        │
 │  menú Archivo (Nuevo/Abrir/Guardar)         │
@@ -57,7 +57,7 @@ no es una simulación electromagnética completa.
 ├─────────────────────────────────────────────┤
 │  core/  (modelo de dominio)                │
 │  geometry (metros), space, wall, material,  │
-│  band, radio (ruido/ancho/estándar F7),     │
+│  band, radio, channel (canales F10),        │
 │  access_point, client, project, result      │
 │  NO contiene fórmulas de RF                │
 │  NO importa UI ni persistence              │
@@ -82,9 +82,10 @@ Representa el dominio. Entidades puras, sin lógica de RF ni de UI.
 |---|---|
 | `geometry.py` | `Point2D`, `Segment2D`, `Rect` — **unidades: metros**; `Rect.edge_segments` (F9) |
 | `band.py` | `FrequencyBand` — 2.4 / 5 / 6 GHz desde V1 |
+| `channel.py` | **Fase 10:** `WifiChannel` (número lógico + centro derivado) y catálogo por familia — `channels_for_frequency`, `channel_numbers_for_frequency`, `channel_for_band`, `default_channel`, `validate_channel_config` (triple banda/canal/ancho), `MAX_CHANNEL_NUMBER = 233` (decisión BQ: **fuente única**; nadie más tabular frecuencias) |
 | `material.py` | `Material` — atenuación por banda, valores centralizados |
 | `radio.py` | `RadioConfiguration` — P_tx, ganancias, pérdidas, Lm, sensibilidad, **ruido/ancho/estándar (F7)** + `allowed_channel_widths_mhz`, `wifi_generation` |
-| `access_point.py` | `AccessPoint` — posición en metros + configuración de radio |
+| `access_point.py` | `AccessPoint` — posición en metros + configuración de radio + **`band_id`/`channel` por AP (F10)**: invariante canal ⇒ banda, canal ∈ [1, 233] (decisión BS) |
 | `client.py` | `ClientDevice` — posición + sensibilidad |
 | `wall.py` | `Wall`, `Opening` — geometría + material + espesor. **F8:** `Opening` muro-relativo con validación (límites BK), `OPENING_KINDS`, `wall_point_at_offset`, `opening_segment`, `group_openings_by_wall` (orden canónico). **F9:** el scaffold de `Obstacle` se mudó a `core/obstacle.py` (un solo concepto) |
 | `obstacle.py` | **Fase 9:** `Obstacle` (footprint `Rect` en metros, material obligatorio, `kind`, `attenuation_override_db`, `blocks_signal`) + `OBSTACLE_KINDS`, `MIN/MAX_OBSTACLE_SIZE_M`, `MAX_OBSTACLE_ATTENUATION_DB`, `DEFAULT_OBSTACLE_MATERIAL_ID` (decisión BL) |
@@ -104,22 +105,22 @@ devuelven resultados. **La UI solo consume estos resultados.**
 | `intersection.py` | Cruce trayecto ↔ segmento de pared (interior estricto) |
 | `obstacles.py` | `trace_walls(..., openings=, obstacles=)` — atenuación por material/espesor, suma; **F8:** un cruce dentro de un hueco **sustituye** la pérdida del material por el override del hueco (decisión BG); `WallCrossing`/`CrossingLoss` llevan `opening_id`. **F9:** `obstacle_attenuation_db` (override sustituye material, BM), `trace_obstacles`, `_obstacle_candidates` (cruce interior estricto, un solo atravesamiento, BN), `ObstacleCrossing`/`ObstacleTraceResult.obstacles_crossed` y `CrossingLoss.obstacle_id` |
 | `coverage_grid.py` | **Fase 4:** malla regular de puntos (metros), límites |
-| `simulator.py` | `simulate_coverage` — un punto o el grid completo; valida ancho×banda (F7), calcula stats con SNR y propaga `openings`/`obstacles` a `trace_walls` (F8/F9) |
+| `simulator.py` | `simulate_coverage` — un punto o el grid completo; valida ancho×banda (F7) y **canal×banda vía `channel_for_band` (F10)**, calcula stats con SNR y propaga `openings`/`obstacles` a `trace_walls` (F8/F9) |
 | `combine.py` | Combinación de resultados multi-AP (Fase 5) con stats de SNR del ganador (F7) |
 
-### `ui/` (Fase 3–9)
+### `ui/` (Fase 3–10)
 Presentación. Sin fórmulas RF; solo pintar, capturar eventos y llamar
 al engine / `EditorSession`.
 
 | Módulo | Responsabilidad |
 |---|---|
-| `session.py` | `EditorSession`: operaciones puras sobre `Project` (testeable sin Tk): editor + guardar/abrir/nuevo + dirty state + `heatmap_metric`/`apply_rf_settings` (F7) + **CRUD de `Space`/`Opening` (F8)** + **CRUD de `Obstacle` (F9)**: `add_obstacle`/`set_obstacle_properties`/`move_obstacle` (clamps, `replace` revalida el dominio, **invalidan heatmap y dirty** — BP), passthrough de `openings`/`obstacles` a `simulate_coverage` |
+| `session.py` | `EditorSession`: operaciones puras sobre `Project` (testeable sin Tk): editor + guardar/abrir/nuevo + dirty state + `heatmap_metric`/`apply_rf_settings` (F7) + **CRUD de `Space`/`Opening` (F8)** + **CRUD de `Obstacle` (F9)**: `add_obstacle`/`set_obstacle_properties`/`move_obstacle` (clamps, `replace` revalida el dominio, **invalidan heatmap y dirty** — BP), passthrough de `openings`/`obstacles` a `simulate_coverage` + **configuración RF por AP (F10)**: `set_ap_rf_config` (triple atómico validado en `core.channel`, dirty/invalidación solo con cambio real — BU) y `resolve_band_for_ap` (`ap.band_id` o la de la corrida o la activa — BS), usado por `run_heatmap`/`run_simulation` |
 | `viewport.py` | **Único** conversor metros ↔ píxeles (escala isotrópica) |
-| `editor_canvas.py` | Canvas: capas floor → heatmap → spaces → **obstacles (F9)** → walls (con huecos) → APs → leyenda (RSSI o SNR); hit-test AP → cliente → openings → **obstacles** → paredes → espacios (F9); tools `Zona` y **`Objeto` con dos clics + preview (F8/F9)**; arrastre de obstáculo con clamp (F9) |
+| `editor_canvas.py` | Canvas: capas floor → heatmap → spaces → **obstacles (F9)** → walls (con huecos) → APs → leyenda (RSSI o SNR); hit-test AP → cliente → openings → **obstacles** → paredes → espacios (F9); tools `Zona` y **`Objeto` con dos clics + preview (F8/F9)**; arrastre de obstáculo con clamp (F9); **etiqueta `CH n · w MHz` bajo el AP solo si tiene canal configurado (F10, BU)** |
 | `coverage_renderer.py` | `SimulationResult` → imagen Pillow RGBA + leyenda + stats; escalas `rssi`/`snr` (F7, parámetro `metric`) |
 | `app.py` | Ventana principal, **debounce ~150 ms** del heatmap, menú **Archivo** (Nuevo/Abrir/Guardar/Guardar como) y confirmación de cambios sin guardar; tecla `e` → tool Zona, tecla **`o` → tool Objeto (F9)**, Escape limpia trazos (F8/F9) |
 | `panels/toolbar.py` | Herramienta (incl. **Zona** y **Objeto**, F8/F9), banda, resolución, toggle heatmap, selector de AP, **métrica RSSI/SNR y Config RF… (F7)**, **Dimensiones…** (F8 renombra el viejo `Espacio…`) |
-| `panels/properties.py` | Propiedades del elemento + resumen simulación/heatmap + bloque RF global (F7) + **Espacio (nombre/función) y Apertura (tipo/offsets) + `+ Puerta`/`+ Ventana` desde la pared (F8)** + **marco Objeto: nombre/tipo/material/override `band_id=dB` (F9)** |
+| `panels/properties.py` | Propiedades del elemento + resumen simulación/heatmap + bloque RF global (F7) + **Espacio (nombre/función) y Apertura (tipo/offsets) + `+ Puerta`/`+ Ventana` desde la pared (F8)** + **marco Objeto: nombre/tipo/material/override `band_id=dB` (F9)** + **marco «Radio del AP»: banda/canal/ancho desde `core.channel`, frecuencia y estándar de solo lectura, Aplicar atómico con error controlado (F10, BU)** |
 | `dialogs/rf_dialog.py` | **F7:** diálogo de configuración RF (ruido, objetivos, estándar, ancho); captura `ValueError` |
 
 ### `persistence/` (Fase 6, endurecida en 6.1)
@@ -132,7 +133,7 @@ Tkinter ni simula; el dominio (`core/`) no sabe que existen archivos.
 
 | Módulo | Responsabilidad |
 |---|---|
-| `json_project_repository.py` | `save_project` (revalida + `.tmp` + `fsync` + `os.replace`) / `load_project`, `project_to_dict` / `project_from_dict`, dispatch por `schema_version` (`_document_v1`; punto de extensión para futuras versiones), `ProjectFormatError`, límites; **F8:** `spaces`/`openings` por piso (claves opcionales al leer, siempre escritas) con validación estricta (pared existente, offsets dentro de la pared, límites BJ); **F9:** `obstacles` por piso (misma fórmula, límites BO: material del catálogo, kind soportado, rect ≤ 1000 m, override [0, 200], `MAX_OBSTACLES = 5000`) |
+| `json_project_repository.py` | `save_project` (revalida + `.tmp` + `fsync` + `os.replace`) / `load_project`, `project_to_dict` / `project_from_dict`, dispatch por `schema_version` (`_document_v1`; punto de extensión para futuras versiones), `ProjectFormatError`, límites; **F8:** `spaces`/`openings` por piso (claves opcionales al leer, siempre escritas) con validación estricta (pared existente, offsets dentro de la pared, límites BJ); **F9:** `obstacles` por piso (misma fórmula, límites BO: material del catálogo, kind soportado, rect ≤ 1000 m, override [0, 200], `MAX_OBSTACLES = 5000`); **F10:** `access_points[].band_id` opcional al leer (ausente ⇒ `None` ⇒ banda activa; archivos F1–F9 sin migración), siempre escrito al guardar; `channel` explícito exige `band_id` existente y canal del catálogo de esa banda; la frecuencia central **nunca** se persiste (BR); `schema_version` sigue en 1 |
 | `EditorState` | Preferencias persistibles del editor: banda activa y resolución del grid |
 
 ### `config/`
@@ -173,6 +174,13 @@ UI (metros)                    engine                              UI (píxeles)
    (F9)** → paredes → APs/clientes → leyenda. El hit-test del editor
    **no** depende de la capa heatmap.
 6. La UI **nunca** recalcula FSPL, SOM, intersecciones ni umbrales.
+7. **Fase 10:** antes de simular, cada AP resuelve su banda con
+   `resolve_band_for_ap` (`ap.band_id` → banda de la corrida → banda
+   activa). El **canal** del AP no entra en el cálculo: solo se valida
+   contra su banda (`channel_for_band`) y se muestra como metadata
+   (panel y etiqueta del lienzo). Heatmap con APs de banda mixta ⇒
+   `combine_results` rechaza (contrato F5) y el error queda visible en
+   el panel.
 
 ### `trace_walls` (responsabilidad clave)
 
@@ -222,7 +230,9 @@ trace_walls(source, target, walls, band_id, openings=(), obstacles=())
   AP ganador por punto.
 - Disclaimer: estimación predictiva, no simulación EM.
 - 6 GHz: error visible (`MaterialAttenuationError`), sin fallback.
-- **No** hay interferencia, SINR, roaming ni optimización de canales.
+- **No** hay interferencia, SINR, roaming ni optimización de canales:
+  el canal configurado en F10 es metadata de planeamiento y **no**
+  cambia ninguna métrica del heatmap (regresión F9 byte-idéntica).
 
 ### Persistencia (Fase 6)
 
@@ -282,6 +292,14 @@ trace_walls(source, target, walls, band_id, openings=(), obstacles=())
   [0, 200] dB, ids únicos y límites BJ (`MAX_SPACES`,
   `MAX_OPENINGS`, `MAX_OPENINGS_PER_WALL`). Los espacios **no**
   deben caer dentro del rect del piso (decisión BJ).
+- **F10 (misma versión 1, decisión BV):** cada AP puede traer
+  `band_id` como clave **opcional** (ausente ⇒ `None` ⇒ banda activa):
+  los archivos F1–F9 abren sin migración. Al guardar se escribe
+  **siempre** (junto al `channel` ya existente). Validación al leer:
+  `band_id` debe existir en `project.bands`; un `channel` explícito
+  exige `band_id` y pertenecer al catálogo de esa banda
+  (`core.channel`); la frecuencia central del canal **nunca** viaja en
+  el archivo (se deriva al abrir).
 
 ## Unidades
 
@@ -326,8 +344,15 @@ Los píxeles **no existen** en `core/` ni `engine/`.
   (BN), editor (tool `Objeto`, tecla `o`, dos clics, arrastre con
   clamp, panel), claves opcionales `obstacles` en schema v1 (BO),
   regresión F8 byte-idéntica.
-- **Futuro:** canales/interferencia, edición de extremos de pared,
-  CAD (snaps, snaps angulares, booleanos).
+- **Fase 10 (hecha):** canales y configuración RF por AP —
+  `core/channel.py` como fuente única del catálogo número ↔ centro
+  derivado (BQ/BR), `AccessPoint.band_id + channel` con invariante
+  canal ⇒ banda (BS), validación centralizada del triple (BT), panel
+  «Radio del AP» + etiqueta de canal en el lienzo (BU), `band_id`
+  opcional en schema v1 (BV), A/B y regresión F9 byte-idéntica; la
+  física no cambió (BW).
+- **Futuro:** interferencia/co-adyacencia de canales (F11), edición de
+  extremos de pared, CAD (snaps, snaps angulares, booleanos).
 - **Futuro 3D:** `Floor.elevation_m` ya existe; geometría 2D no cambia.
 - **Otras bases de datos / API / nube:** la capa `persistence/` es el
   punto de sustitución sin tocar `core/` ni `engine/`.

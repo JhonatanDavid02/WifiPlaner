@@ -15,6 +15,7 @@ from __future__ import annotations
 import time
 from typing import Sequence
 
+from core.channel import channel_for_band
 from core.geometry import Point2D
 from core.obstacle import Obstacle
 from core.radio import allowed_channel_widths_mhz
@@ -67,9 +68,10 @@ def simulate_coverage(
         SimulationResult con una LinkEvaluation por punto evaluado.
 
     Raises:
-        ValueError: si no hay puntos que evaluar, o si el ancho de
+        ValueError: si no hay puntos que evaluar, si el ancho de
             canal de la radio no es compatible con la banda (Fase 7:
-            2.4 GHz admite 20/40 MHz; 5/6 GHz 20/40/80/160 MHz).
+            2.4 GHz admite 20/40 MHz; 5/6 GHz 20/40/80/160 MHz) o si el
+            canal configurado del AP no pertenece a la banda (Fase 10).
         MaterialAttenuationError: si una pared cruzada en sección sólida
             o un obstáculo cruzado no tiene datos de atenuación para la
             banda (p. ej. 6 GHz).
@@ -89,6 +91,12 @@ def simulate_coverage(
             f"{frequency_band.name} ({frequency_band.frequency_mhz:g} MHz); "
             f"permitidos: {', '.join(str(w) for w in allowed_widths)} MHz."
         )
+
+    # Fase 10: si el AP trae canal configurado, debe pertenecer a la
+    # banda que se simula (validación centralizada, decisión BT). El
+    # canal NO modifica FSPL/RSSI: es solo comprobación de coherencia.
+    if access_point.channel is not None:
+        channel_for_band(frequency_band, access_point.channel)
 
     points: list[Point2D] = list(sample_points or [])
     if client is not None:

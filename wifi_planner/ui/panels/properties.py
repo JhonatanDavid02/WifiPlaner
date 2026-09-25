@@ -8,6 +8,12 @@ banda) para obstáculos de mobiliario. El override se escribe como
 ``band_id=dB`` separado por comas o punto y coma (p. ej.
 ``band_5=6, band_2_4=4``); sustituye —nunca suma— la pérdida de
 referencia del material (decisión BM).
+
+Fase 10: añade el marco «Radio del AP» (banda/canal/ancho + frecuencia
+derivada). Las listas de canales y anchos vienen del catálogo único de
+``core/channel.py`` / la regla de familia F7 (decisión BQ): la UI no
+duplica tablas de frecuencias. El canal NO altera RSSI; la validación
+del triple vive en la sesión (decisión BT).
 """
 
 from __future__ import annotations
@@ -16,7 +22,13 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 from typing import Callable
 
+from core.channel import (
+    channel_for_band,
+    channel_numbers_for_frequency,
+    default_channel,
+)
 from core.obstacle import OBSTACLE_KINDS
+from core.radio import allowed_channel_widths_mhz, wifi_generation
 from core.wall import OPENING_KINDS
 from ui.session import EditorSession, SelectionKind
 
@@ -54,6 +66,55 @@ class PropertiesPanel(ttk.Frame):
             bg="#12121c", fg="#e0e0e0", relief="flat", font=("Segoe UI", 9),
         )
         self._info.pack(fill="x")
+
+        # --- Radio del AP (fase 10: banda/canal/ancho por AP — BS/BT) ---
+        self._ap_radio_box = ttk.LabelFrame(
+            self, text="Radio del AP (Fase 10)", padding=8
+        )
+        ap_radio_box = self._ap_radio_box
+        ap_radio_box.pack(fill="x", padx=8, pady=4)
+
+        ttk.Label(ap_radio_box, text="Banda:").grid(row=0, column=0, sticky="w")
+        self._ap_band_var = tk.StringVar()
+        self._ap_band_combo = ttk.Combobox(
+            ap_radio_box, textvariable=self._ap_band_var, state="readonly", width=16
+        )
+        self._ap_band_combo.grid(row=0, column=1, sticky="ew", pady=2)
+        self._ap_band_combo.bind("<<ComboboxSelected>>", self._ap_band_selected)
+
+        ttk.Label(ap_radio_box, text="Canal:").grid(row=1, column=0, sticky="w")
+        self._ap_channel_var = tk.StringVar()
+        self._ap_channel_combo = ttk.Combobox(
+            ap_radio_box, textvariable=self._ap_channel_var, state="readonly", width=16
+        )
+        self._ap_channel_combo.grid(row=1, column=1, sticky="ew", pady=2)
+        self._ap_channel_combo.bind("<<ComboboxSelected>>", self._ap_channel_selected)
+
+        ttk.Label(ap_radio_box, text="Ancho (MHz):").grid(row=2, column=0, sticky="w")
+        self._ap_width_var = tk.StringVar()
+        self._ap_width_combo = ttk.Combobox(
+            ap_radio_box, textvariable=self._ap_width_var, state="readonly", width=16
+        )
+        self._ap_width_combo.grid(row=2, column=1, sticky="ew", pady=2)
+
+        ttk.Label(ap_radio_box, text="Frecuencia:").grid(row=3, column=0, sticky="w")
+        self._ap_freq_var = tk.StringVar(value="—")
+        ttk.Label(ap_radio_box, textvariable=self._ap_freq_var).grid(
+            row=3, column=1, sticky="w", pady=2
+        )
+
+        ttk.Label(ap_radio_box, text="Estándar:").grid(row=4, column=0, sticky="w")
+        self._ap_standard_var = tk.StringVar(value="—")
+        ttk.Label(ap_radio_box, textvariable=self._ap_standard_var).grid(
+            row=4, column=1, sticky="w", pady=2
+        )
+
+        self._ap_apply_btn = ttk.Button(
+            ap_radio_box, text="Aplicar radio", command=self._ap_apply
+        )
+        self._ap_apply_btn.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        ap_radio_box.columnconfigure(1, weight=1)
+        self._refresh_ap_bands()
 
         # --- Pared: material / espesor ---
         wall_box = ttk.LabelFrame(self, text="Pared", padding=8)
@@ -262,6 +323,124 @@ class PropertiesPanel(ttk.Frame):
         self._material_combo["values"] = values
         self._obstacle_material_combo["values"] = values
 
+    def _refresh_ap_bands(self) -> None:
+        """Banda del marco Radio desde el catálogo del proyecto (F10)."""
+        self._ap_band_combo["values"] = [b.name for b in self._session.project.bands]
+
+    def _ap_current_band(self):
+        """Banda seleccionada en el combo (nombre → objeto) o None."""
+        label = self._ap_band_var.get()
+        for band in self._session.project.bands:
+            if band.name == label:
+                return band
+        return None
+
+    def _ap_display_band(self, ap):
+        """Banda del AP para mostrar/editar: la configurada o la activa."""
+        session = self._session
+        if ap.band_id:
+            return session.project.get_band(ap.band_id)
+        return session.project.get_band(session.band_id)
+
+    def _ap_update_freq_label(self) -> None:
+        """Frecuencia central derivada del catálogo (nunca persistida)."""
+        band = self._ap_current_band()
+        raw = self._ap_channel_var.get().strip()
+        if band is None or not raw:
+            self._ap_freq_var.set("—")
+            return
+        try:
+            channel = channel_for_band(band, int(raw))
+        except ValueError:
+            self._ap_freq_var.set("—")
+            return
+        self._ap_freq_var.set(f"{channel.center_frequency_mhz:g} MHz")
+
+    def _ap_band_selected(self, _event=None) -> None:
+        """Al cambiar la banda: canales y anchos de esa familia (F10)."""
+        band = self._ap_current_band()
+        if band is None:
+            return
+        numbers = channel_numbers_for_frequency(band.frequency_mhz)
+        self._ap_channel_combo["values"] = [str(n) for n in numbers]
+        self._ap_channel_var.set(str(default_channel(band).number))
+        widths = [str(w) for w in allowed_channel_widths_mhz(band.frequency_mhz)]
+        self._ap_width_combo["values"] = widths
+        if self._ap_width_var.get() not in widths:
+            self._ap_width_var.set(widths[0])
+        self._ap_update_freq_label()
+
+    def _ap_channel_selected(self, _event=None) -> None:
+        self._ap_update_freq_label()
+
+    def _ap_load_controls(self, ap) -> None:
+        """Sincroniza los controles Radio con el AP seleccionado."""
+        self._refresh_ap_bands()
+        band = self._ap_display_band(ap)
+        self._ap_band_var.set(band.name)
+        numbers = channel_numbers_for_frequency(band.frequency_mhz)
+        self._ap_channel_combo["values"] = [str(n) for n in numbers]
+        self._ap_channel_var.set(
+            str(ap.channel)
+            if ap.channel is not None
+            else str(default_channel(band).number)
+        )
+        widths = [str(w) for w in allowed_channel_widths_mhz(band.frequency_mhz)]
+        self._ap_width_combo["values"] = widths
+        self._ap_width_var.set(str(ap.radio.channel_width_mhz))
+        self._ap_update_freq_label()
+        self._ap_standard_var.set(
+            f"{ap.radio.wifi_standard} "
+            f"({wifi_generation(ap.radio.wifi_standard, band.frequency_mhz)})"
+        )
+        self._ap_band_combo.configure(state="readonly")
+        self._ap_channel_combo.configure(state="readonly")
+        self._ap_width_combo.configure(state="readonly")
+        self._ap_apply_btn.configure(state="normal")
+
+    def _ap_clear_controls(self) -> None:
+        self._ap_band_var.set("")
+        self._ap_channel_combo["values"] = []
+        self._ap_channel_var.set("")
+        self._ap_width_combo["values"] = []
+        self._ap_width_var.set("")
+        self._ap_freq_var.set("—")
+        self._ap_standard_var.set("—")
+        self._ap_band_combo.configure(state="disabled")
+        self._ap_channel_combo.configure(state="disabled")
+        self._ap_width_combo.configure(state="disabled")
+        self._ap_apply_btn.configure(state="disabled")
+
+    def _ap_rf_lines(self, ap) -> list[str]:
+        """Líneas de configuración RF del AP para el bloque Selección."""
+        band = self._ap_display_band(ap)
+        if ap.band_id:
+            band_line = f"Banda: {band.name} (configurada)"
+        else:
+            band_line = f"Banda: — (activa: {band.name})"
+        if ap.channel is not None:
+            try:
+                center = (
+                    f"{channel_for_band(band, ap.channel).center_frequency_mhz:g} MHz"
+                )
+                channel_line = (
+                    f"Canal: {ap.channel} ({center}) · "
+                    f"Ancho: {ap.radio.channel_width_mhz:g} MHz"
+                )
+            except ValueError:
+                channel_line = (
+                    f"Canal: {ap.channel} (inválido para {band.name}) · "
+                    f"Ancho: {ap.radio.channel_width_mhz:g} MHz"
+                )
+        else:
+            channel_line = (
+                f"Canal: — (sin configurar) · "
+                f"Ancho: {ap.radio.channel_width_mhz:g} MHz"
+            )
+        generation = wifi_generation(ap.radio.wifi_standard, band.frequency_mhz)
+        standard_line = f"Estándar: {ap.radio.wifi_standard} ({generation})"
+        return [band_line, channel_line, standard_line]
+
     def _set_text(self, widget: tk.Text, text: str) -> None:
         widget.configure(state="normal")
         widget.delete("1.0", "end")
@@ -321,12 +500,14 @@ class PropertiesPanel(ttk.Frame):
         elif selection.kind == SelectionKind.AP:
             ap = session.selected_ap()
             if ap:
+                rf_lines = self._ap_rf_lines(ap)
                 self._set_text(
                     self._info,
                     f"Access Point\n\n"
                     f"ID: {ap.id}\n"
                     f"X: {ap.position.x:.2f} m\n"
-                    f"Y: {ap.position.y:.2f} m",
+                    f"Y: {ap.position.y:.2f} m\n"
+                    f"{rf_lines[0]}\n{rf_lines[1]}\n{rf_lines[2]}",
                 )
                 self._material_combo.configure(state="disabled")
                 self._thickness_entry.configure(state="disabled")
@@ -408,8 +589,17 @@ class PropertiesPanel(ttk.Frame):
                 self._x_var.set("")
                 self._y_var.set("")
 
-        # --- Estados de los controles Fase 8 (recalculados en cada refresh) ---
+        # --- Estados por tipo (recalculados en cada refresh) ---
         kind = selection.kind if selection is not None else None
+
+        # --- Estados del marco Radio del AP (Fase 10) ---
+        ap = session.selected_ap() if kind == SelectionKind.AP else None
+        if ap is not None:
+            self._ap_load_controls(ap)
+        else:
+            self._ap_clear_controls()
+
+        # --- Estados de los controles Fase 8 (recalculados en cada refresh) ---
         space = session.selected_space() if kind == SelectionKind.SPACE else None
         opening = (
             session.selected_opening() if kind == SelectionKind.OPENING else None
@@ -643,5 +833,32 @@ class PropertiesPanel(ttk.Frame):
             )
         except (KeyError, ValueError) as exc:
             messagebox.showerror("Objeto", str(exc))
+            return
+        self._on_changed()
+
+    # ------------------------------------------------------------------
+    # Fase 10: configuración RF por AP (banda/canal/ancho; sin RF aquí)
+    # ------------------------------------------------------------------
+
+    def _ap_apply(self) -> None:
+        ap = self._session.selected_ap()
+        if not ap:
+            return
+        band = self._ap_current_band()
+        if band is None:
+            messagebox.showerror("Radio del AP", "Selecciona una banda.")
+            return
+        try:
+            channel = int(self._ap_channel_var.get().strip())
+            width = int(self._ap_width_var.get().strip())
+        except ValueError:
+            messagebox.showerror("Radio del AP", "Canal o ancho inválido.")
+            return
+        try:
+            self._session.set_ap_rf_config(
+                ap.id, band_id=band.id, channel=channel, width_mhz=width
+            )
+        except (KeyError, ValueError) as exc:
+            messagebox.showerror("Radio del AP", str(exc))
             return
         self._on_changed()

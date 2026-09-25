@@ -49,6 +49,15 @@ Decisiones de formato (docs/decisions.md, Fase 6 + 7 + 8):
   en metros), ``material_id`` (obligatorio y existente en el catálogo),
   ``kind`` y ``attenuation_override_db`` opcional por banda. Se escribe
   siempre al guardar, como spaces/openings.
+- Fase 10 (misma versión 1, decisiones BS/BV): cada AP gana la clave
+  **opcional** ``band_id`` (ausente ⇒ ``None``: el AP usa la banda
+  activa; archivos F6–F9 abren sin migración) junto al ``channel``
+  ya existente, que ahora sí se configura. Invariante al LEER:
+  ``channel`` explícito exige ``band_id`` y el canal debe pertenecer
+  al catálogo de esa banda (``core.channel``); ``band_id`` debe existir
+  en ``project.bands``. El ancho × banda sigue validándose al simular
+  (contrato F7 intacto). La frecuencia central del canal NUNCA se
+  persiste: se deriva del catálogo (decisión BR).
 """
 
 from __future__ import annotations
@@ -62,6 +71,7 @@ from typing import Any
 
 from core.access_point import AccessPoint
 from core.band import FrequencyBand
+from core.channel import channel_for_band
 from core.client import ClientDevice
 from core.geometry import Point2D, Rect, Segment2D
 from core.material import Material
@@ -395,6 +405,8 @@ def _ap_to_dict(ap: AccessPoint) -> dict[str, Any]:
         "position": _point_to_dict(ap.position),
         "name": ap.name,
         "enabled": ap.enabled,
+        # Fase 10: banda configurada del AP (None = banda activa).
+        "band_id": ap.band_id,
         "channel": ap.channel,
         "radio": _radio_to_dict(ap.radio),
         "metadata": dict(ap.metadata),
@@ -952,19 +964,41 @@ def _floors_from_list(
     return floors
 
 
-def _aps_from_list(value: Any, path: str) -> list[AccessPoint]:
+def _aps_from_list(
+    value: Any, path: str, bands: list[FrequencyBand]
+) -> list[AccessPoint]:
     items = _require_list(value, path, MAX_APS)
     aps: list[AccessPoint] = []
+    bands_by_id = {band.id: band for band in bands}
     for index, item in enumerate(items):
         item_path = f"{path}[{index}]"
         data = _require_dict(item, item_path)
         for field in ("id", "position"):
             if field not in data:
                 _fail(f"{item_path}.{field}: falta el campo obligatorio.")
+        # Fase 10 (decisión BV): banda y canal por AP. Ambas claves son
+        # opcionales al leer (archivos F6–F9 sin ellas ⇒ None); la
+        # frecuencia central NUNCA viene del archivo: se deriva del
+        # catálogo de canales (decisión BR).
+        raw_band_id = data.get("band_id")
+        band_id: str | None = None
+        if raw_band_id is not None:
+            band_id = _require_str(raw_band_id, f"{item_path}.band_id", max_len=64)
+            if band_id not in bands_by_id:
+                _fail(f"{item_path}.band_id: banda desconocida {band_id!r}.")
         raw_channel = data.get("channel")
         channel: int | None = None
         if raw_channel is not None:
             channel = _require_int(raw_channel, f"{item_path}.channel", minimum=0)
+            if band_id is None:
+                _fail(
+                    f"{item_path}.channel: requiere band_id "
+                    "(canal por AP sin banda configurada, Fase 10)."
+                )
+            try:
+                channel_for_band(bands_by_id[band_id], channel)
+            except ValueError as exc:
+                _fail(f"{item_path}.channel: {exc}")
         if "radio" in data:
             radio = _radio_from_dict(data["radio"], f"{item_path}.radio")
         else:
@@ -974,6 +1008,7 @@ def _aps_from_list(value: Any, path: str) -> list[AccessPoint]:
                 id=_require_id(data["id"], f"{item_path}.id"),
                 position=_point_from_dict(data["position"], f"{item_path}.position"),
                 radio=radio,
+                band_id=band_id,
                 channel=channel,
                 name=_require_str(data.get("name", ""), f"{item_path}.name"),
                 enabled=_require_bool(data.get("enabled", True), f"{item_path}.enabled"),
@@ -1046,7 +1081,9 @@ def project_from_dict(value: Any) -> Project:
     materials = _materials_from_list(data["materials"], "project.materials")
     materials_by_id = {material.id: material for material in materials}
     floors = _floors_from_list(data["floors"], "project.floors", materials_by_id)
-    access_points = _aps_from_list(data["access_points"], "project.access_points")
+    access_points = _aps_from_list(
+        data["access_points"], "project.access_points", bands
+    )
     clients = _clients_from_list(data["clients"], "project.clients")
     metadata = _validate_metadata(data.get("metadata"), "project.metadata")
 
