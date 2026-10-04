@@ -2,6 +2,16 @@
 
 from __future__ import annotations
 
+# Etiquetas de estado de los clientes (misma fuente que la clasificación
+# de ui/client_signal.py, para que color y texto no puedan divergir).
+from ui.client_signal import (
+    STATE_BUENA,
+    STATE_DEBIL,
+    STATE_FUERTE,
+    STATE_INESTABLE,
+    STATE_SIN_SENAL,
+)
+
 # Fondo general (tema oscuro)
 BG = "#1e1e2e"
 BG_PANEL = "#252536"
@@ -46,6 +56,23 @@ OBSTACLE_PREVIEW = "#4f9cf9"
 #: Herramienta medir (Fase 14-F): línea y etiqueta de distancia.
 MEASURE_COLOR = "#e5c07b"
 
+# Estado de la señal en la posición de cada cliente (indicador del
+# plano). El color describe el RSSI medido ahí (ui/client_signal.py);
+# NO se lee del heatmap, que es solo pintura del resultado.
+CLIENT_STATE_BUENA = "#8affc1"      # verde claro
+CLIENT_STATE_FUERTE = "#3ddc84"     # verde
+CLIENT_STATE_DEBIL = "#ffd166"      # amarillo
+CLIENT_STATE_INESTABLE = "#ff5f56"  # rojo
+CLIENT_STATE_SIN = "#8b93a1"        # gris
+
+CLIENT_STATE_COLOR = {
+    STATE_BUENA: CLIENT_STATE_BUENA,
+    STATE_FUERTE: CLIENT_STATE_FUERTE,
+    STATE_DEBIL: CLIENT_STATE_DEBIL,
+    STATE_INESTABLE: CLIENT_STATE_INESTABLE,
+    STATE_SIN_SENAL: CLIENT_STATE_SIN,
+}
+
 # Controles ttk (estilo)
 STYLE_MAP = {
     "TFrame": {"background": [("active", BG), ("!active", BG)]},
@@ -70,6 +97,16 @@ STYLE_MAP = {
         "background": [("active", ACCENT_HOVER), ("!active", BG_PANEL)],
         "foreground": [("active", FG), ("!active", FG)],
         "padding": [8, 4],
+    },
+    # TCheckbutton y TSeparator no estaban en la paleta: clam los deja
+    # con fondo gris claro y texto NEGRO sobre el panel oscuro.
+    "TCheckbutton": {
+        "background": [("active", BG_PANEL), ("!active", BG_PANEL)],
+        "foreground": [("active", FG), ("!active", FG)],
+        "padding": [4, 4],
+    },
+    "TSeparator": {
+        "background": [("active", FLOOR_OUTLINE), ("!active", FLOOR_OUTLINE)],
     },
     "TMenubutton": {
         "background": [("active", BG_PANEL), ("!active", BG_PANEL)],

@@ -640,7 +640,7 @@ def test_set_heatmap_metric_accepts_interference(session):
     assert session.heatmap_metric == "interference"
 
 
-def test_set_heatmap_metric_interference_invalidates_but_not_dirty(session, tmp_path):
+def test_set_heatmap_metric_interference_does_not_invalidate_rf(session, tmp_path):
     session.add_access_point(Point2D(2.0, 2.0))
     session.set_grid_resolution(2.0)
     session.save_project(str(tmp_path / "clean.json"))  # limpia el dirty
@@ -650,7 +650,8 @@ def test_set_heatmap_metric_interference_invalidates_but_not_dirty(session, tmp_
 
     session.set_heatmap_metric("interference")
     assert session.heatmap_metric == "interference"
-    assert session.heatmap_dirty is True
+    # Vista pura: el RF ya calculado sigue válido (sin recálculo).
+    assert session.heatmap_dirty is False
     assert session.dirty is False  # es vista, no configuración (BA)
 
     session.set_heatmap_metric("interference")  # idempotente

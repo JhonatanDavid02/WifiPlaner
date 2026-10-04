@@ -20,6 +20,7 @@ from typing import Callable
 from core.geometry import Point2D, Segment2D
 from core.wall import group_openings_by_wall, wall_point_at_offset
 from ui import theme
+from ui.client_signal import state_slug
 from ui.session import EditorSession, SelectionKind, Tool, snap_point_to_grid
 from ui.viewport import Viewport
 
@@ -77,6 +78,10 @@ class EditorCanvas(tk.Canvas):
         self._heatmap_image = None
         # Referencia viva a la PhotoImage de Tk (evita GC).
         self._heatmap_photo = None
+        # Fase 15.1: capa de resaltado con la cobertura del AP
+        # seleccionado (capa aparte; el fondo no se toca).
+        self._ap_coverage_image = None
+        self._ap_coverage_photo = None
 
         self.bind("<Configure>", self._on_configure)
         self.bind("<Motion>", self._on_motion)
@@ -117,6 +122,7 @@ class EditorCanvas(tk.Canvas):
         self._drag_wall_endpoint = None
         self._drag_space_id = None
         self._pan_last = None
+        self.configure(cursor="")
         self._preview_end = None
 
     def draw_heatmap(self, image) -> None:
@@ -128,26 +134,60 @@ class EditorCanvas(tk.Canvas):
         self._heatmap_image = image
         self._place_heatmap_item()
 
-    def _place_heatmap_item(self) -> None:
-        """Inserta la imagen del heatmap como capa intermedia y rebaja su z-order."""
-        self.delete("heatmap")
-        self._heatmap_photo = None
-        if self._heatmap_image is None:
-            return
-        from PIL import Image, ImageTk
+    def clear_ap_coverage(self) -> None:
+        """Elimina solo la capa de resaltado del AP seleccionado (F15.1).
 
+        El heatmap de fondo NO se toca.
+        """
+        self._ap_coverage_image = None
+        self._place_heatmap_item()
+
+    def draw_ap_coverage(self, image) -> None:
+        """Dibuja la cobertura del AP seleccionado como capa aparte (F15.1).
+
+        Args:
+            image: Imagen RGBA (PIL) con los RSSI de ESE AP, o None para
+                quitar el resaltado. El fondo permanece intacto.
+        """
+        self._ap_coverage_image = image
+        self._place_heatmap_item()
+
+    def _place_heatmap_item(self) -> None:
+        """Coloca las capas de imagen del lienzo (fondo + resaltado).
+
+        El fondo va **justo por encima** del rect del piso (tag
+        ``floor``): si quedara por debajo, su relleno opaco lo taparía.
+        El resaltado (F15.1) se crea después, con lo que queda sobre el
+        fondo y, como ``render_project`` dibuja las entidades a
+        continuación, por debajo de paredes/APs/clientes.
+        """
         x1, y1, x2, y2 = self.viewport.floor_rect_px
         # La imagen se generó a la escala del momento; al hacer zoom/pan
         # se reescala al rect del piso actual (Fase 14-E).
         target = (max(int(round(x2 - x1)), 1), max(int(round(y2 - y1)), 1))
-        image = self._heatmap_image
-        if image.size != target:
-            image = image.resize(target, Image.BILINEAR)
-        self._heatmap_photo = ImageTk.PhotoImage(image)
-        # tag "heatmap": capa intermedia; no interfiere con hit-testing
-        # (la selección usa coordenadas de mundo, no ids de Canvas).
-        self.create_image(x1, y1, image=self._heatmap_photo, anchor="nw", tags=("heatmap",))
-        self.tag_lower("heatmap")
+
+        from PIL import Image, ImageTk
+
+        def place(image, tag: str):
+            layer = image
+            if layer.size != target:
+                layer = layer.resize(target, Image.BILINEAR)
+            photo = ImageTk.PhotoImage(layer)
+            # tag del mismo nombre: no interfiere con hit-testing (la
+            # selección usa coordenadas de mundo, no ids de Canvas).
+            self.create_image(x1, y1, image=photo, anchor="nw", tags=(tag,))
+            return photo
+
+        self.delete("heatmap")
+        self._heatmap_photo = None
+        if self._heatmap_image is not None:
+            self._heatmap_photo = place(self._heatmap_image, "heatmap")
+            self.tag_raise("heatmap", "floor")
+
+        self.delete("ap_coverage")
+        self._ap_coverage_photo = None
+        if self._ap_coverage_image is not None:
+            self._ap_coverage_photo = place(self._ap_coverage_image, "ap_coverage")
 
     def render_project(self) -> None:
         """Redibuja todo el Canvas desde el Project (fuente de verdad).
@@ -162,9 +202,10 @@ class EditorCanvas(tk.Canvas):
         # Ajustar viewport al piso actual
         vp.set_world_size(self.session.floor_width_m, self.session.floor_height_m)
 
-        # 1) Rejilla + rect del piso (fondo)
-        self._draw_grid()
+        # 1) Rect del piso (fondo opaco) y después la rejilla: la rejilla
+        #    debe quedar POR ENCIMA del relleno o no se vería nunca.
         self._draw_floor_rect()
+        self._draw_grid()
 
         # 2) Heatmap (capa intermedia, bajo las entidades)
         self._place_heatmap_item()
@@ -243,6 +284,7 @@ class EditorCanvas(tk.Canvas):
         self.create_rectangle(
             x1, y1, x2, y2,
             fill=theme.FLOOR_FILL, outline=theme.FLOOR_OUTLINE, width=2,
+            tags=("floor",),
         )
         w, h = self.session.floor_width_m, self.session.floor_height_m
         self.create_text(
@@ -445,6 +487,29 @@ class EditorCanvas(tk.Canvas):
                 sx, sy + 14, text=client.id,
                 fill=theme.TEXT_LABEL, font=("Segoe UI", 7),
             )
+            self._draw_client_signal(sx, sy, client)
+
+    def _draw_client_signal(self, sx: float, sy: float, client) -> None:
+        """Indicador de calidad de señal en la posición del cliente.
+
+        Halo del color del estado + badge macizo arriba a la derecha (el
+        punto del cliente se mantiene intacto; no hay círculos de
+        cobertura artificiales). El color sale del RSSI real calculado
+        en esa posición (``session.client_state``), nunca de los
+        píxeles del heatmap.
+        """
+        state = self.session.client_state(client)
+        color = theme.CLIENT_STATE_COLOR.get(state.state, theme.CLIENT_STATE_SIN)
+        tag = f"client_state:{state_slug(state.state)}"
+        self.create_oval(
+            sx - 11, sy - 11, sx + 11, sy + 11,
+            outline=color, width=2, tags=("client_state", tag),
+        )
+        self.create_oval(
+            sx + 5, sy - 13, sx + 13, sy - 5,
+            fill=color, outline=theme.BG_CANVAS, width=1,
+            tags=("client_state", tag),
+        )
 
     def _draw_legend(self) -> None:
         """Leyenda de cobertura/SNR (umbrales del modelo, no mágicos)."""
@@ -452,6 +517,20 @@ class EditorCanvas(tk.Canvas):
 
         metric = getattr(self.session, "heatmap_metric", "rssi")
         rows = legend_rows(self.session.project.thresholds, metric=metric)
+        if metric == "rssi":
+            # Colores alineados con SELECTED_AP_COVERAGE: verde → verde
+            # muy clarito → amarillo → rojo → gris (sin señal). Etiquetas
+            # y rangos siguen saliendo de los umbrales del modelo; solo
+            # se cambia el color para que la leyenda describa la capa de
+            # cobertura del AP y no la escala continua del heatmap.
+            from ui.app import AP_COVERAGE_NO_SIGNAL_RGB, AP_COVERAGE_RGB
+
+            palette = (*AP_COVERAGE_RGB, AP_COVERAGE_NO_SIGNAL_RGB)
+            if len(rows) == len(palette):
+                rows = [
+                    dict(row, color=color)
+                    for row, color in zip(rows, palette)
+                ]
         x, y = 12, 12
         width, row_h = 148, 16
         height = 22 + row_h * len(rows) + 6
@@ -684,6 +763,8 @@ class EditorCanvas(tk.Canvas):
         dx = event.x - self._pan_last[0]
         dy = event.y - self._pan_last[1]
         self._pan_last = (event.x, event.y)
+        if dx == 0 and dy == 0:
+            return  # mismo evento entregado dos veces: nada que mover
         self.viewport.pan_by(dx, dy)
         self.render_project()
 
@@ -693,6 +774,12 @@ class EditorCanvas(tk.Canvas):
     def _on_motion(self, event) -> None:
         world = self._cursor_world(event)
         self.on_cursor(world.x, world.y)
+
+        # Arrastre sobre espacio libre = desplazar el plano (misma
+        # mecánica que el botón central: pan incremental en píxeles).
+        if self._pan_last is not None:
+            self._on_pan_motion(event)
+            return
 
         # Fase 14-F: la medición sigue al cursor (en metros, con snap).
         if (
@@ -803,8 +890,14 @@ class EditorCanvas(tk.Canvas):
         if tool == Tool.SELECT:
             hit = self._hit_test(world)
             if hit is None:
+                # Espacio libre: deselecciona y prepara el DESPLAZAMIENTO
+                # del plano con el botón izquierdo (arrastrar sobre el
+                # vacío). En planos grandes (100×100) moverse solo con
+                # zoom es incómodo; el botón central sigue igual.
                 self.session.select(None, None)
                 self.on_model_changed()
+                self._pan_last = (event.x, event.y)
+                self.configure(cursor="fleur")
                 return
             kind, entity_id = hit
             self.session.select(kind, entity_id)
@@ -927,11 +1020,19 @@ class EditorCanvas(tk.Canvas):
             self.on_model_changed()
             return
 
-    def _on_drag(self, _event) -> None:
-        # El movimiento se procesa en _on_motion (B1-Motion también dispara Motion).
-        pass
+    def _on_drag(self, event) -> None:
+        # El movimiento de objetos se procesa en _on_motion. Aquí se
+        # cubre además el DESPLAZAMIENTO del plano: al arrastrar con el
+        # botón izquierdo Tk emite <B1-Motion> (no siempre reenviado a
+        # <Motion>), y el pan tiene que verse en los dos casos.
+        # `_on_pan_motion` es idempotente: si el mismo evento llega dos
+        # veces, la segunda vez el desplazamiento es 0 y no se mueve nada.
+        if self._pan_last is not None:
+            self._on_pan_motion(event)
 
     def _on_release(self, _event) -> None:
+        self._pan_last = None
+        self.configure(cursor="")
         if (
             self._drag_ap_id
             or self._drag_client_id

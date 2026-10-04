@@ -23,13 +23,224 @@ from ui.session import (
     GRID_STEP_CHOICES,
     EditorSession,
     HEATMAP_ALL_APS,
-    SelectionKind,
     Tool,
 )
 from ui.viewport import Viewport
 
 # Debounce del heatmap (ms). El valor es configurable por instancia.
 HEATMAP_DEBOUNCE_MS = 150
+
+# ---------------------------------------------------------------------------
+# Fase 15.1: OVERLAY de la cobertura del AP seleccionado (capa visual).
+#
+# Paleta deliberadamente DISTINTA del heatmap de fondo (verde → ámbar →
+# rojo): cian → violeta. Así se ve que es una capa añadida encima del
+# fondo estático, no una versión recoloreada del propio fondo.
+#
+# La capa se construye con los RSSI que ya calculó el motor y con los
+# umbrales CONFIGURADOS del proyecto (−50 / −67 / −75 / −85 dBm por
+# defecto): no hay fórmula RF nueva ni círculo artificial.
+# ---------------------------------------------------------------------------
+AP_COVERAGE_RGB: tuple[tuple[int, int, int], ...] = (
+    (40, 190, 80),    # ≥ excelente_min_dbm  (verde)
+    (160, 235, 170),  # ≥ good_min_dbm      (verde muy clarito)
+    (250, 210, 50),   # ≥ regular_min_dbm   (amarillo)
+    (235, 60, 60),    # ≥ weak_min_dbm      (rojo)
+)
+#: Celdas SIN señal (RSSI < weak_min_dbm): gris claro para que se vea
+#: exactamente dónde no llega el AP (la zona de cobertura es la que NO
+#: es gris).
+AP_COVERAGE_NO_SIGNAL_RGB = (205, 205, 205)
+AP_COVERAGE_NO_SIGNAL_ALPHA = 110
+#: Opacidad del relleno según el RSSI de cada celda: LA ZONA SE
+#: «ENCIENDE» ALREDEDOR DEL AP y se desdibuja hacia los bordes, de modo
+#: que el heatmap de fondo se sigue viendo fuera de la zona fuerte (al
+#: hacer click no "cambia" el fondo) pero la cobertura se distingue.
+AP_COVERAGE_ALPHA_MIN = 40
+AP_COVERAGE_ALPHA_MAX = 165
+#: Borde de cada zona de calidad: separa excelente/bueno/aceptable/débil.
+AP_COVERAGE_ZONE_EDGE = (6, 12, 24, 255)
+AP_COVERAGE_ZONE_EDGE_WIDTH = 3
+#: Límite de la cobertura (RSSI < weak_min_dbm): blanco y grueso, la
+#: zona «corta» exactamente donde el motor dice que no hay señal.
+AP_COVERAGE_LIMIT = (255, 255, 255, 255)
+AP_COVERAGE_LIMIT_WIDTH = 4
+
+
+def _ap_coverage_rank(rx_power_dbm: float, thresholds) -> int | None:
+    """Banda de calidad del RSSI según los umbrales configurados (F15.1).
+
+    Returns:
+        0..3 (de mejor a peor banda) o ``None`` si el RSSI está por
+        debajo de ``weak_min_dbm`` ⇒ sin señal: la celda se pinta en
+        **gris claro** y su borde es el límite del alcance del AP.
+    """
+    if rx_power_dbm >= thresholds.excellent_min_dbm:
+        return 0
+    if rx_power_dbm >= thresholds.good_min_dbm:
+        return 1
+    if rx_power_dbm >= thresholds.regular_min_dbm:
+        return 2
+    if rx_power_dbm >= thresholds.weak_min_dbm:
+        return 3
+    return None
+
+
+def _ap_coverage_alpha(
+    rx_power_dbm: float, floor_dbm: float, peak_dbm: float, thresholds
+) -> int:
+    """Opacidad de la celda dentro del RANGO de RSSI del propio AP.
+
+    La celda más floja de ese AP pinta ``AP_COVERAGE_ALPHA_MIN`` (casi
+    transparente: el heatmap de fondo se sigue viendo) y la más fuerte
+    ``AP_COVERAGE_ALPHA_MAX`` (zona encendida). El resultado es una capa
+    centrada en el AP que NO disimula el fondo fuera de su área fuerte.
+
+    Solo presenta: no hay fórmula RF aquí, el RSSI ya lo calculó el
+    motor; los extremos del rango salen de sus propias ``evaluations``.
+    """
+    span = peak_dbm - floor_dbm
+    if rx_power_dbm <= floor_dbm or span <= 0:
+        return AP_COVERAGE_ALPHA_MIN
+    ratio = (rx_power_dbm - floor_dbm) / span
+    ratio = 0.0 if ratio < 0.0 else (1.0 if ratio > 1.0 else ratio)
+    # Nunca por debajo del mínimo ya en la banda «débil»: el límite de
+    # cobertura lo marca el trazo blanco, no la opacidad.
+    floor_ratio = 0.0
+    if span > 0 and thresholds.weak_min_dbm > floor_dbm:
+        floor_ratio = (thresholds.weak_min_dbm - floor_dbm) / span
+    ratio = max(ratio, min(floor_ratio, 1.0))
+    span_alpha = AP_COVERAGE_ALPHA_MAX - AP_COVERAGE_ALPHA_MIN
+    return int(round(AP_COVERAGE_ALPHA_MIN + span_alpha * ratio))
+
+
+def build_ap_coverage_overlay(result, viewport, thresholds, cell_size_m: float):
+    """Capa SELECTED_AP_COVERAGE: la cobertura visual del AP seleccionado.
+
+    Flujo (conexión única con el motor que ya existe):
+
+        CoverageGrid → evaluations → rx_power_dbm
+            → clasificación RSSI (umbrales configurados)
+            → celdas de la cobertura → esta imagen
+
+    * **relleno** de cada celda del CoverageGrid con su banda de
+      calidad y una opacidad que crece con el RSSI:
+      **verde** = excelente, **verde muy clarito** = buena,
+      **amarillo** = regular, **rojo** = débil y **gris claro** = sin
+      señal (RSSI < ``weak_min_dbm``);
+    * **borde oscuro** entre zonas de calidad distintas;
+    * **límite blanco y grueso** donde se pasa de tener señal a no
+      tenerla: la forma la pone el motor (paredes y obstáculos generan
+      cortes irregulares).
+
+    Nada más: sin líneas decorativas ni retículas. Es una capa aparte:
+    seleccionar no invalida ni sustituye el heatmap de fondo (el gris de
+    «sin señal» tapa el plano SOLO en las celdas donde el motor no da
+    señal). No hay radio, distancia ni fórmula: la forma sale de los
+    RSSI que devuelve ``simulate_coverage`` con la banda y las paredes
+    del AP.
+
+    Args:
+        result: ``SimulationResult`` de **un** solo AP.
+        viewport: usado solo para metros → píxeles (igual que el fondo).
+        thresholds: ``CoverageThresholds`` del proyecto.
+        cell_size_m: resolución del grid (tamaño de celda en metros).
+
+    Returns:
+        Imagen RGBA, o ``None`` si no hay evaluaciones.
+    """
+    evaluations = result.evaluations
+    if not evaluations:
+        return None
+
+    from PIL import Image, ImageDraw
+
+    x1f, y1f, x2f, y2f = viewport.floor_rect_px
+    img_w = max(1, int(round(x2f - x1f)))
+    img_h = max(1, int(round(y2f - y1f)))
+    image = Image.new("RGBA", (img_w, img_h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    half_px = max(1.0, viewport.world_to_screen_len(cell_size_m) / 2.0)
+
+    floor_dbm = min(evaluation.rx_power_dbm for evaluation in evaluations)
+    peak_dbm = max(evaluation.rx_power_dbm for evaluation in evaluations)
+
+    # 1) Relleno: una celda por punto del CoverageGrid. Banda de
+    #    calidad con opacidad creciente hacia el AP; sin señal ⇒ gris.
+    cells: list[tuple[float, float, int, float, float]] = []
+    for evaluation in evaluations:
+        sx, sy = viewport.world_to_screen(evaluation.point)
+        cx, cy = sx - x1f, sy - y1f
+        rank = _ap_coverage_rank(evaluation.rx_power_dbm, thresholds)
+        cells.append(
+            (cx, cy, -1 if rank is None else rank,
+             evaluation.point.x, evaluation.point.y)
+        )
+        rect = (cx - half_px, cy - half_px, cx + half_px, cy + half_px)
+        if rank is not None:
+            draw.rectangle(
+                rect,
+                fill=(
+                    *AP_COVERAGE_RGB[rank],
+                    _ap_coverage_alpha(
+                        evaluation.rx_power_dbm, floor_dbm, peak_dbm, thresholds
+                    ),
+                ),
+            )
+        else:
+            draw.rectangle(
+                rect,
+                fill=(*AP_COVERAGE_NO_SIGNAL_RGB, AP_COVERAGE_NO_SIGNAL_ALPHA),
+            )
+
+    # 2) Aristas entre celdas vecinas: borde entre zonas de calidad o
+    #    límite de la cobertura. No se dibuja nada más.
+    rows: dict[float, list] = {}
+    cols: dict[float, list] = {}
+    for cx, cy, rank, point_x, point_y in cells:
+        rows.setdefault(round(point_y, 6), []).append((cx, cy, rank))
+        cols.setdefault(round(point_x, 6), []).append((cx, cy, rank))
+
+    def edge_kind(first, second) -> str | None:
+        """Clase de arista entre dos celdas vecinas (o None si no hay)."""
+        if first[2] == second[2]:
+            return None
+        if first[2] < 0 or second[2] < 0:
+            return "limit"      # cobertura ↔ fuera de cobertura
+        return "zone"           # cambio de banda de calidad
+
+    STYLES = {
+        "zone": (AP_COVERAGE_ZONE_EDGE, AP_COVERAGE_ZONE_EDGE_WIDTH),
+        "limit": (AP_COVERAGE_LIMIT, AP_COVERAGE_LIMIT_WIDTH),
+    }
+
+    def paint(run, vertical: bool, wanted: str) -> None:
+        run.sort(key=lambda cell: cell[0 if vertical else 1])
+        for first, second in zip(run, run[1:]):
+            if edge_kind(first, second) != wanted:
+                continue
+            color, width = STYLES[wanted]
+            if vertical:  # arista vertical entre columnas vecinas
+                mid = (first[0] + second[0]) / 2.0
+                draw.line(
+                    (mid, first[1] - half_px, mid, first[1] + half_px),
+                    fill=color, width=width,
+                )
+            else:         # arista horizontal entre filas vecinas
+                mid = (first[1] + second[1]) / 2.0
+                draw.line(
+                    (first[0] - half_px, mid, first[0] + half_px, mid),
+                    fill=color, width=width,
+                )
+
+    # El límite de la cobertura va el último: es lo que tiene que verse
+    # con más fuerza.
+    for wanted in ("zone", "limit"):
+        for run in rows.values():
+            paint(run, True, wanted)
+        for run in cols.values():
+            paint(run, False, wanted)
+    return image
 
 # Filtros del diálogo de archivos de proyecto.
 FILE_TYPES = [
@@ -59,8 +270,10 @@ class WifiPlannerApp(tk.Tk):
         )
         self._heatmap_debounce_ms = int(heatmap_debounce_ms)
         self._heatmap_after_id = None
-        # Última selección sincronizada con el selector de cobertura (F15).
-        self._last_selection_key: tuple | None = None
+        # Imagen del resaltado (Fase 15.1) y el resultado RF del que se
+        # construyó: si sigue siendo el mismo, no se vuelve a dibujar.
+        self._ap_coverage_source = None
+        self._ap_coverage_image = None
 
         self._apply_theme()
         self._build_menu()
@@ -267,8 +480,29 @@ class WifiPlannerApp(tk.Tk):
         except tk.TclError:
             pass
         for name, opts in theme.STYLE_MAP.items():
+            # theme.STYLE_MAP mezcla opciones escalares (p. ej. padding)
+            # con especificaciones de estado (listas de (estado, valor)).
+            # Las primeras van a `configure` y las segundas a `map`:
+            # pasar una lista a `configure` NO lanza error, pero guarda
+            # la cadena literal "{active #…}" como COLOR, Tk no la
+            # reconoce (TclError: unknown color name) y el widget se
+            # pinta en negro ⇒ botones/etiquetas ilegibles.
+            scalar = {
+                k: v for k, v in opts.items()
+                if not (isinstance(v, list) and v and isinstance(v[0], tuple))
+            }
+            states = {
+                k: v for k, v in opts.items()
+                if isinstance(v, list) and v and isinstance(v[0], tuple)
+            }
             try:
-                style.configure(name, **opts)
+                if scalar:
+                    style.configure(name, **scalar)
+            except tk.TclError:
+                pass
+            try:
+                if states:
+                    style.map(name, **states)
             except tk.TclError:
                 pass
         style.configure(
@@ -407,6 +641,14 @@ class WifiPlannerApp(tk.Tk):
         self.session.set_band(band_id)  # invalida heatmap si cambió
         self._update_title()
         self._schedule_heatmap()
+        # La banda activa cambia la simulación puntual si el AP no
+        # tiene banda propia: el panel se repone solo.
+        self._refresh_simulation_if_band_changed()
+        # Y el estado de los clientes (RSSI a otra frecuencia): el
+        # indicador del plano y el panel de información se refrescan ya,
+        # sin esperar al recálculo del heatmap.
+        self.render_project()
+        self.properties.refresh()
 
     def _on_resolution(self, resolution_m: float) -> None:
         try:
@@ -423,6 +665,12 @@ class WifiPlannerApp(tk.Tk):
             self._schedule_heatmap()
         else:
             self.canvas.clear_heatmap()
+            # La cobertura del AP seleccionado NO depende del heatmap:
+            # se refresca en lugar de borrarse (Fase 15.1). render_project
+            # re-coloca la capa POR DEBAJO de paredes/APs (draw_ap_coverage
+            # recrea el item y quedaría el último si no se reordena).
+            self._refresh_ap_coverage()
+            self.render_project()
             self.properties.show_heatmap_text("Heatmap desactivado.")
 
     def _on_heatmap_ap(self, ap_ref: str) -> None:
@@ -437,14 +685,56 @@ class WifiPlannerApp(tk.Tk):
         self._schedule_heatmap()
 
     def _on_heatmap_metric(self, metric: str) -> None:
-        """Métrica del heatmap (RSSI/SNR): invalida y repinta el resultado."""
+        """Métrica visual del heatmap (RSSI/SNR/interferencia/SINR).
+
+        Es una vista: NO se recalcula el RF. Las evaluaciones de
+        ``last_heatmap`` son las mismas con cualquier métrica (otro
+        color, otro valor por punto), así que se reconstruye SOLO la
+        imagen. Si todavía no hay resultado válido se programa el
+        cálculo normal.
+        """
         try:
             self.session.set_heatmap_metric(metric)
         except ValueError as exc:
-            messagebox.showwarning("Métrica", str(exc), parent=self)
+            messagebox.showerror("Métrica", str(exc), parent=self)
             return
         self.toolbar.set_metric(self.session.heatmap_metric)
-        self._schedule_heatmap()
+        if not self._recolor_heatmap():
+            self._schedule_heatmap()
+
+    def _recolor_heatmap(self) -> bool:
+        """Repinta el heatmap con la métrica elegida, SIN ejecutar el RF.
+
+        Usa ``last_heatmap`` ya calculado (mismo resultado, distinta
+        paleta/valor) y actualiza el panel de texto.
+
+        Returns:
+            True si había resultado válido y ya está repintado; False si
+            aún hay que recalcular (heatmap apagado, sin resultado o
+            documento modificado).
+        """
+        session = self.session
+        if (not session.heatmap_enabled
+                or session.last_heatmap is None
+                or session.heatmap_dirty):
+            return False
+        image = build_heatmap_image(
+            session.last_heatmap,
+            self.viewport,
+            cell_size_m=session.grid_resolution_m,
+            metric=session.heatmap_metric,
+        )
+        if image is None:
+            return False
+        self.canvas.draw_heatmap(image)
+        self.render_project()
+        self.properties.show_heatmap_text(session.heatmap_stats_text())
+        clients = session.client_rssi_lines()
+        if clients:
+            self.properties.append_heatmap_text(
+                "\nClientes:\n" + "\n".join(clients)
+            )
+        return True
 
     def _on_rf_settings(self) -> None:
         """Diálogo de configuración RF global (Fase 7 + Fase 12)."""
@@ -668,44 +958,88 @@ class WifiPlannerApp(tk.Tk):
         self.toolbar.set_band_label(
             BAND_LABEL_BY_ID.get(self.session.band_id, "2.4 GHz")
         )
-        # Fase 15: si la selección es un AP, la cobertura mostrada es la suya.
-        self._sync_heatmap_ap_with_selection()
+        # Fase 15.1: el heatmap de fondo SOLO se recalcula si el documento
+        # cambió. Una selección nueva (o cualquier cambio de vista) solo
+        # refresca la capa de resaltado del AP elegido: el fondo queda
+        # exactamente igual.
+        background_changed = (
+            self.session.heatmap_dirty or self.session.last_heatmap is None
+        )
         self._refresh_ap_selector()
         self._update_title()
-        self._schedule_heatmap()
+        self._schedule_heatmap(background=background_changed)
+        # El panel «Simulación» guarda los números de una corrida: si la
+        # banda efectiva ya no es la de esa corrida, se repite para que
+        # no muestre RSSI de otra banda (refresco silencioso).
+        self._refresh_simulation_if_band_changed()
 
-    def _sync_heatmap_ap_with_selection(self) -> None:
-        """Al seleccionar un AP se muestra SU cobertura (Fase 15).
+    # ------------------------------------------------------------------
+    # Simulación puntual (panel «Simulación / Heatmap»)
+    # ------------------------------------------------------------------
 
-        El selector «AP:» de la toolbar es la fuente del ámbito del
-        heatmap; aquí solo se cambia cuando la selección pasa a ser un
-        AP concreto, para que «cada AP muestre su área de cobertura» sin
-        pisar la elección manual del usuario en cualquier otro caso.
+    def _simulation_band_now(self) -> str | None:
+        """Id de banda que tendría HOY la simulación puntual guardada.
+
+        Se resuelve contra el AP de ESA corrida (no contra la selección
+        actual): su banda configurada manda sobre la activa (Fase 10).
         """
-        selection = self.session.selection
-        key = None if selection is None else (selection.kind, selection.entity_id)
-        if key == self._last_selection_key:
-            return
-        self._last_selection_key = key
-        if selection is None or selection.kind != SelectionKind.AP:
-            return
-        if self.session.heatmap_ap_id == selection.entity_id:
+        session = self.session
+        sim = session.last_simulation
+        if sim is None or not sim.evaluations:
+            return None
+        ap_id = sim.evaluations[0].access_point_id
+        ap = None
+        for candidate in session.project.access_points:
+            if candidate.id == ap_id:
+                ap = candidate
+                break
+        if ap is None and session.project.access_points:
+            ap = session.project.access_points[0]
+        if ap is None:
+            return None
+        return session.resolve_band_for_ap(ap, session.band_id).id
+
+    def _refresh_simulation_if_band_changed(self) -> None:
+        """Repite la simulación puntual si cambió la banda (panel vivo).
+
+        Solo si YA había una simulación (nunca se crea una como efecto
+        secundario) y sin diálogos: el objetivo es que «Banda», «RSSI
+        mínimo/máximo», etc. del panel correspondan siempre a la
+        configuración actual del AP.
+        """
+        session = self.session
+        sim = session.last_simulation
+        if sim is None or sim.band_id == self._simulation_band_now():
             return
         try:
-            self.session.set_heatmap_ap(selection.entity_id)
-        except KeyError:
+            session.run_simulation(session.band_id)
+        except MaterialAttenuationError as exc:
+            session.last_simulation_error = str(exc)
+            self.properties.show_simulation_text(str(exc))
             return
-        self._refresh_ap_selector()
-        self._schedule_heatmap()
+        except ValueError:
+            return
+        self.properties.show_simulation_text(session.simulation_summary_text())
 
     # ------------------------------------------------------------------
     # Heatmap (debounce + engine + renderer)
     # ------------------------------------------------------------------
 
-    def _schedule_heatmap(self) -> None:
-        """Debounce: evita recalcular en cada evento de un arrastre."""
+    def _schedule_heatmap(self, *, background: bool = True) -> None:
+        """Debounce: evita recalcular en cada evento de un arrastre.
+
+        Args:
+            background: False (Fase 15.1) marca que el heatmap de fondo
+                NO está obsoleto: solo se refrescará la capa de
+                resaltado del AP seleccionado, sin volver a ejecutar el
+                pipeline F10→F12 ni sustituir la imagen del fondo.
+        """
         if not self.session.heatmap_enabled:
+            # Sin heatmap NO hay fondo, pero la cobertura del AP
+            # seleccionado sigue existiendo: es una capa independiente.
             self.canvas.clear_heatmap()
+            self._refresh_ap_coverage()
+            self.render_project()
             return
         if self._heatmap_after_id is not None:
             try:
@@ -713,17 +1047,66 @@ class WifiPlannerApp(tk.Tk):
             except tk.TclError:
                 pass
             self._heatmap_after_id = None
-        self.session.invalidate_heatmap()
-        self._update_status_coords(None, None)
-        self.properties.show_heatmap_text("Calculando cobertura...")
+        if background:
+            self.session.invalidate_heatmap()
+            self._update_status_coords(None, None)
+            self.properties.show_heatmap_text("Calculando cobertura...")
         self._heatmap_after_id = self.after(
             self._heatmap_debounce_ms, self._run_heatmap_now
         )
+
+    def _refresh_ap_coverage(self) -> None:
+        """Resaltado de la cobertura del AP seleccionado (Fase 15.1).
+
+        Calcula los RSSI **reales** de ese AP (mismo grid, misma
+        geometría y misma banda resuelta que el heatmap) y los pinta como
+        capa aparte. No toca ``session.last_heatmap`` ni el ámbito «AP:»
+        del fondo: si no hay AP seleccionado, solo se quita el resaltado.
+
+        La cobertura viene CACHEADA de la sesión (ver
+        ``EditorSession.selected_ap_coverage``): mientras no cambie la RF
+        se reutiliza el resultado **y** la imagen ya construida, de modo
+        que seleccionar un AP, volver a él o desactivar el heatmap no
+        ejecutan ``simulate_coverage``.
+        """
+        image = None
+        source = None
+        try:
+            result = self.session.selected_ap_coverage()
+            if result is not None:
+                if (result is self._ap_coverage_source
+                        and self._ap_coverage_image is not None):
+                    # Mismo resultado RF que la imagen actual: nada que
+                    # recalcular ni que redibujar (solo re-colocar).
+                    source, image = result, self._ap_coverage_image
+                else:
+                    source = result
+                    image = build_ap_coverage_overlay(
+                        result,
+                        self.viewport,
+                        self.session.project.thresholds,
+                        self.session.grid_resolution_m,
+                    )
+        except (MaterialAttenuationError, KeyError, ValueError):
+            # Banda sin materiales / AP inexistente: sin resaltado.
+            source, image = None, None
+        self._ap_coverage_source = source
+        self._ap_coverage_image = image
+        self.canvas.draw_ap_coverage(image)
 
     def _run_heatmap_now(self) -> None:
         self._heatmap_after_id = None
         if not self.session.heatmap_enabled:
             self.canvas.clear_heatmap()
+            # El overlay del AP seleccionado no depende del heatmap.
+            self._refresh_ap_coverage()
+            self.render_project()
+            return
+        # Fase 15.1: primero el resaltado del AP seleccionado; el fondo
+        # solo se recalcula si el documento lo exige (ver _schedule_heatmap).
+        self._refresh_ap_coverage()
+        if not self.session.heatmap_dirty:
+            self.render_project()
             return
         try:
             result = self.session.run_heatmap()

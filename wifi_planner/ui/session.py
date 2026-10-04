@@ -59,6 +59,7 @@ from ui.coverage_renderer import (
     HEATMAP_METRIC_SINR,
     HEATMAP_METRICS,
 )
+from ui.client_signal import ClientSignalState, evaluate_client_state
 from ui.geometry_view import GeometryView, build_geometry_view
 
 # Selector de heatmap: todos los APs (cobertura combinada, Fase 5).
@@ -285,6 +286,17 @@ class EditorSession:
         self.last_heatmap: SimulationResult | None = None
         self.last_heatmap_error: str | None = None
         self.heatmap_dirty: bool = True
+        # Estado RF de los clientes (ui/client_signal): caché que se
+        # vacía en mark_dirty(), es decir en cualquier cambio de
+        # documento que pueda alterar la señal (mover cliente/AP, banda,
+        # config RF, paredes, materiales, undo/redo...).
+        self._client_states: dict[str, ClientSignalState] | None = None
+        # Caché de la cobertura del AP seleccionado (Fase 15.1):
+        # {clave RF (ui/_ap_coverage_key) → SimulationResult}. Se vacía
+        # en invalidate_heatmap() —el único punto por el que pasa toda
+        # mutación de RF— para que seleccionar/AP o mover un cliente NO
+        # ejecuten simulate_coverage. Una entrada por AP visitado.
+        self._ap_coverage_cache: dict[tuple, SimulationResult] = {}
         # Fase 6: persistencia. Ruta del documento y cambios sin guardar.
         self.project_path: str | None = None
         self.dirty: bool = False
@@ -294,8 +306,14 @@ class EditorSession:
     # ------------------------------------------------------------------
 
     def mark_dirty(self) -> None:
-        """Marca el proyecto como modificado desde la última guarda."""
+        """Marca el proyecto como modificado desde la última guarda.
+
+        Es también el punto de invalidación del estado de los clientes:
+        toda mutación de documento (y solo ellas) pasa por aquí, así que
+        el RSSI de cada cliente se recalcula en la próxima lectura.
+        """
         self.dirty = True
+        self._client_states = None
 
     def mark_saved(self, path: str | None = None) -> None:
         """Marca el proyecto como guardado (opcionalmente en una ruta)."""
@@ -543,6 +561,8 @@ class EditorSession:
         self.last_heatmap = None
         self.last_heatmap_error = None
         self.invalidate_heatmap()
+        # Documento distinto: los estados RF calculados no aplican.
+        self._client_states = None
         self.dirty = False
 
     # ------------------------------------------------------------------
@@ -871,8 +891,17 @@ class EditorSession:
             self.invalidate_heatmap()
 
     def invalidate_heatmap(self) -> None:
-        """Marca el heatmap como no válido (no sirve el resultado anterior)."""
+        """Marca el heatmap como no válido (no sirve el resultado anterior).
+
+        Es también el punto único de invalidación de la cobertura
+        cacheada del AP seleccionado (``selected_ap_coverage``): todo lo
+        que invalida el heatmap cambia la RF real (geometría, APs,
+        banda, configuración, resolución, undo/redo...) y nada más, así
+        que los cambios de UI (selección, mover un cliente, visibilidad
+        o métrica) no tocan ese caché.
+        """
         self.heatmap_dirty = True
+        self._ap_coverage_cache = {}
 
     def build_coverage_grid(self) -> CoverageGrid:
         """Grid espacial del piso con la resolución actual (metros)."""
@@ -902,10 +931,14 @@ class EditorSession:
     def set_heatmap_metric(self, metric: str) -> None:
         """Métrica visual del heatmap: ``rssi``, ``snr``, ``interference`` o ``sinr``.
 
-        Es una vista: invalida el heatmap (los píxeles a pintar cambian)
-        pero NO marca ``dirty`` ni se persiste (decisión BA). Las
-        métricas de interferencia (F11, CC) y SINR (F12, CH) se añaden
-        al registro del renderer sin tocar el enum congelado de F7.
+        Es una vista pura: NO invalida ``last_heatmap`` ni marca
+        ``dirty`` (decisión BA). Las evaluaciones no cambian con la
+        métrica —es la misma RF con otro color—, así que la UI
+        reconstruye solo la imagen con
+        ``build_heatmap_image(..., metric=...)`` (ver
+        ``ui.app._recolor_heatmap``) sin volver a ejecutar el motor.
+        Las métricas de interferencia (F11, CC) y SINR (F12, CH) se
+        añaden al registro del renderer sin tocar el enum congelado de F7.
         """
         if metric not in HEATMAP_METRICS:
             raise ValueError(
@@ -914,7 +947,6 @@ class EditorSession:
             )
         if metric != self.heatmap_metric:
             self.heatmap_metric = metric
-            self.invalidate_heatmap()
 
     def ap_choices_for_heatmap(self) -> list[str]:
         """Valores del selector de AP en la toolbar (todos + ids)."""
@@ -1200,6 +1232,97 @@ class EditorSession:
             applied.append(ap_id)
         return applied
 
+    # ------------------------------------------------------------------
+    # Fase 15.1: cobertura del AP seleccionado (capa de resaltado)
+    # ------------------------------------------------------------------
+
+    def _ap_coverage_key(self, ap: AccessPoint) -> tuple:
+        """Huella RF de la cobertura de ``ap`` para el caché.
+
+        Incluye todo lo que cambia el resultado de ``simulate_coverage``
+        para ESE AP salvo la geometría: paredes/openings/obstáculos no
+        se meten en la clave (sería un hash costoso); de ellos se ocupa
+        ``invalidate_heatmap()``, que se ejecuta en cada mutación de RF
+        y vacía el caché.
+        """
+        band = self.resolve_band_for_ap(ap, self.band_id)
+        radio = ap.radio
+        project_radio = self.project.radio
+        thresholds = self.project.thresholds
+        return (
+            ap.id,
+            band.id,
+            round(ap.position.x, 6),
+            round(ap.position.y, 6),
+            radio.p_tx_dbm,
+            radio.g_tx_dbi,
+            radio.l_tx_db,
+            radio.g_rx_dbi,
+            radio.l_rx_db,
+            radio.sensitivity_dbm,
+            radio.noise_floor_dbm,
+            radio.channel_width_mhz,
+            radio.wifi_standard,
+            project_radio.noise_floor_dbm,
+            thresholds.rssi_target_dbm,
+            thresholds.snr_target_db,
+            thresholds.sinr_target_db,
+            thresholds.som_aprobado_min_db,
+            thresholds.som_riesgo_min_db,
+            self.floor.id,
+            round(self.floor_width_m, 6),
+            round(self.floor_height_m, 6),
+            round(self.grid_resolution_m, 6),
+        )
+
+    def selected_ap_coverage(self) -> SimulationResult | None:
+        """Cobertura de UN solo AP, con sus RSSI reales (Fase 15.1).
+
+        Es la fuente de datos de la capa de resaltado: ejecuta el MISMO
+        ``simulate_coverage`` que usa el heatmap, pero solo para el AP
+        seleccionado y con su banda resuelta (F10), sobre el mismo grid
+        y la misma geometría del piso.
+
+        No toca ``last_heatmap``, no cambia ``heatmap_ap_id``, no marca
+        ``dirty`` ni invalida nada: el heatmap de fondo permanece
+        intacto (el resaltado es una capa aparte, no una vista del
+        fondo).
+
+        **Caché**: el resultado se guarda en ``_ap_coverage_cache`` con
+        su clave (``_ap_coverage_key``) —una entrada por AP— y se
+        reutiliza mientras no cambie nada que afecte la RF. Seleccionar
+        un AP, volver a él o refrescar la capa NO vuelve a ejecutar
+        ``simulate_coverage``; la validez la garantiza
+        ``invalidate_heatmap()`` (geometría, banda, config, resolución,
+        undo/redo...), que vacía la caché entera.
+
+        Returns:
+            Un ``SimulationResult`` con una evaluación por punto del
+            grid, o ``None`` si la selección no es un AP (o el AP ya no
+            existe en el proyecto).
+        """
+        ap = self.selected_ap()
+        if ap is None:
+            # Sin AP seleccionado no hay resaltado; la caché se conserva
+            # para no recalcular al volver a elegir el mismo AP.
+            return None
+        key = self._ap_coverage_key(ap)
+        cached = self._ap_coverage_cache.get(key)
+        if cached is not None:
+            return cached
+        grid = self.build_coverage_grid()
+        result = simulate_coverage(
+            project=self.project,
+            access_point=ap,
+            frequency_band=self.resolve_band_for_ap(ap, self.band_id),
+            sample_points=grid.points(),
+            walls=self.floor.walls,
+            openings=self.floor.openings,
+            obstacles=self.floor.obstacles,
+        )
+        self._ap_coverage_cache[key] = result
+        return result
+
     def run_heatmap(self, band_id: str | None = None) -> SimulationResult:
         """Simula el CoverageGrid con las paredes reales.
 
@@ -1377,6 +1500,47 @@ class EditorSession:
             lines.append(line)
         return lines
 
+    def client_states(self) -> dict[str, ClientSignalState]:
+        """Estado RF de todos los clientes (``id`` → ``ClientSignalState``).
+
+        El cálculo es perezoso y cacheado: ``mark_dirty()`` vacía la
+        caché, de modo que mover un cliente, un AP, una pared, cambiar
+        la banda o la config RF invalidan el resultado automáticamente
+        (nada queda congelado desde que se creó el cliente).
+
+        También se autocorrige: calcula solo las entradas que faltan
+        (cliente recién colocado) y descarta las de clientes ya
+        eliminados. Las entradas que se conservan a propósito (véase
+        ``move_client``) siguen siendo válidas: los clientes no irradian,
+        la señal de uno no depende de la posición de otro.
+        """
+        if self._client_states is None:
+            self._client_states = {}
+        states = self._client_states
+        for client in self.project.clients:
+            if client.id not in states:
+                states[client.id] = evaluate_client_state(self, client)
+        live_ids = {client.id for client in self.project.clients}
+        for stale_id in [cid for cid in states if cid not in live_ids]:
+            del states[stale_id]
+        return states
+
+    def client_state(self, client: ClientDevice) -> ClientSignalState:
+        """Estado RF de UN cliente en su posición exacta (RSSI real).
+
+        Reutiliza ``engine.simulator.simulate_coverage`` (la misma ruta
+        del heatmap) con la posición del cliente como única muestra; el
+        AP «asociado» es el de mayor RSSI en esa posición.
+        """
+        states = self.client_states()
+        state = states.get(client.id)
+        if state is None:
+            # Cliente nuevo cuya creación no pasó por mark_dirty (no
+            # debería ocurrir): se calcula al vuelo y se cachea.
+            state = evaluate_client_state(self, client)
+            states[client.id] = state
+        return state
+
     # ------------------------------------------------------------------
     # Selección / herramienta
     # ------------------------------------------------------------------
@@ -1503,9 +1667,14 @@ class EditorSession:
         position = self._clamp_to_floor(position)
         client_id = next_entity_id(self._all_ids(), "CLIENT")
         client = ClientDevice(id=client_id, position=position)
+        # Colocar un cliente no cambia la señal de los ya existentes:
+        # se conservan sus estados y el nuevo se calcula al leerlo.
+        kept = self._client_states
         self.project.clients.append(client)
         self.select(SelectionKind.CLIENT, client_id)
         self.mark_dirty()
+        if kept is not None:
+            self._client_states = kept
         return client
 
     # ------------------------------------------------------------------
@@ -1860,8 +2029,17 @@ class EditorSession:
         position = self._clamp_to_floor(position)
         for index, client in enumerate(self.project.clients):
             if client.id == client_id:
+                # Optimización de arrastre: mover un cliente no altera
+                # la señal de los demás (los clientes no irradian), así
+                # que solo se invalida SU entrada. mark_dirty() vaciaría
+                # toda la caché y obligaría a recalcular a todos en cada
+                # evento del ratón.
+                kept = self._client_states
                 self.project.clients[index] = replace(client, position=position)
                 self.mark_dirty()
+                if kept is not None:
+                    kept.pop(client_id, None)
+                    self._client_states = kept
                 return
         raise KeyError(f"Cliente no encontrado: {client_id}")
 

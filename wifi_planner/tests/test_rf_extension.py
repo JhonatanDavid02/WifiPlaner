@@ -348,17 +348,21 @@ def test_heatmap_metric_defaults_and_enum():
     assert {m.value for m in HeatmapMetric} == {"rssi", "snr"}
 
 
-def test_set_heatmap_metric_invalidates_but_not_dirty(session, tmp_path):
+def test_set_heatmap_metric_does_not_invalidate_rf(session, tmp_path):
     session.add_access_point(Point2D(2.0, 2.0))
     session.set_grid_resolution(2.0)
     session.save_project(str(tmp_path / "clean.json"))  # limpia el dirty
     session.run_heatmap("band_2_4")
     assert session.heatmap_dirty is False
     assert session.dirty is False
+    heatmap = session.last_heatmap
 
     session.set_heatmap_metric("snr")
     assert session.heatmap_metric == "snr"
-    assert session.heatmap_dirty is True
+    # Es solo una vista: NO invalida el RF (la UI repinta la imagen con
+    # build_heatmap_image(..., metric=) sin volver a simular).
+    assert session.heatmap_dirty is False
+    assert session.last_heatmap is heatmap
     assert session.dirty is False  # es vista, no configuración (BA)
 
     session.set_heatmap_metric("snr")  # idempotente: no re-invalida nada nuevo

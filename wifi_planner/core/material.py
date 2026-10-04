@@ -74,7 +74,7 @@ def default_materials() -> tuple[Material, ...]:
     return (
         Material(
             id="drywall",
-            name="Drywall",
+            name="Muro de yeso",
             description="Muro de yeso (pladur). Estimación de referencia.",
             thickness_default_m=0.012,
             attenuation_db={"band_2_4": 3.0, "band_5": 4.0},

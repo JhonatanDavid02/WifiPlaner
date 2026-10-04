@@ -36,6 +36,24 @@ from core.radio import (
 from core.wall import OPENING_KINDS
 from ui.session import EditorSession, SelectionKind
 
+# Etiquetas visibles (español) ↔ ids estables del modelo. El modelo
+# guarda SIEMPRE el id en inglés (persistencia y contratos de Fase 8/9);
+# aquí solo se traduce lo que se muestra en la interfaz.
+OBSTACLE_KIND_LABELS = {
+    "furniture": "Mobiliario",
+    "equipment": "Equipo",
+    "column": "Columna",
+    "other": "Otro",
+}
+OBSTACLE_KIND_IDS = {label: kind for kind, label in OBSTACLE_KIND_LABELS.items()}
+
+OPENING_KIND_LABELS = {
+    "door": "Puerta",
+    "window": "Ventana",
+    "pass_through": "Paso",
+}
+OPENING_KIND_IDS = {label: kind for kind, label in OPENING_KIND_LABELS.items()}
+
 
 def ap_config_unchanged(
     ap,
@@ -89,8 +107,11 @@ class PropertiesPanel(ttk.Frame):
         sel_box = ttk.LabelFrame(self, text="Selección", padding=8)
         sel_box.pack(fill="x", padx=8, pady=(8, 4))
 
+        # 10 líneas: Cliente / (blanco) / ID / X / Y / AP / Banda /
+        # RSSI / SNR / Estado — el bloque de estado de un cliente tiene
+        # que verse entero sin hacer scroll.
         self._info = tk.Text(
-            sel_box, height=8, wrap="word", state="disabled",
+            sel_box, height=10, wrap="word", state="disabled",
             bg="#12121c", fg="#e0e0e0", relief="flat", font=("Segoe UI", 9),
         )
         self._info.pack(fill="x")
@@ -244,7 +265,7 @@ class PropertiesPanel(ttk.Frame):
         self._opening_kind_combo = ttk.Combobox(
             opening_box,
             textvariable=self._opening_kind_var,
-            values=list(OPENING_KINDS),
+            values=[OPENING_KIND_LABELS.get(k, k) for k in OPENING_KINDS],
             state="readonly",
             width=16,
         )
@@ -288,7 +309,7 @@ class PropertiesPanel(ttk.Frame):
         self._obstacle_kind_combo = ttk.Combobox(
             obstacle_box,
             textvariable=self._obstacle_kind_var,
-            values=list(OBSTACLE_KINDS),
+            values=[OBSTACLE_KIND_LABELS.get(k, k) for k in OBSTACLE_KINDS],
             state="readonly",
             width=16,
         )
@@ -422,10 +443,26 @@ class PropertiesPanel(ttk.Frame):
         self._heat_text.configure(state="disabled")
 
     def _refresh_materials(self) -> None:
+        # Los combos muestran el NOMBRE legible (español); el modelo
+        # sigue recibiendo el id vía _material_id().
         materials = self._session.project.materials
-        values = [m.id for m in materials]
+        values = [m.name for m in materials]
         self._material_combo["values"] = values
         self._obstacle_material_combo["values"] = values
+
+    def _material_label(self, material_id: str) -> str:
+        """Nombre legible (español) de un id de material."""
+        for material in self._session.project.materials:
+            if material.id == material_id:
+                return material.name
+        return material_id
+
+    def _material_id(self, label: str) -> str:
+        """Id de modelo a partir de la etiqueta visible del combo."""
+        for material in self._session.project.materials:
+            if material.name == label:
+                return material.id
+        return label
 
     def _refresh_ap_bands(self) -> None:
         """Banda del marco Radio desde el catálogo del proyecto (F10)."""
@@ -623,9 +660,9 @@ class PropertiesPanel(ttk.Frame):
                 )
                 self._set_text(
                     self._info,
-                    f"Wall\n\n"
+                    f"Pared\n\n"
                     f"ID: {wall.id}\n"
-                    f"Material: {wall.material.name} ({wall.material.id})\n"
+                    f"Material: {wall.material.name}\n"
                     f"Espesor: {thick} m\n"
                     f"Longitud: {length:.2f} m\n"
                     f"Inicio: ({wall.segment.start.x:.2f}, {wall.segment.start.y:.2f}) m\n"
@@ -633,7 +670,7 @@ class PropertiesPanel(ttk.Frame):
                 )
                 self._material_combo.configure(state="readonly")
                 self._thickness_entry.configure(state="normal")
-                self._material_var.set(wall.material.id)
+                self._material_var.set(self._material_label(wall.material.id))
                 self._thickness_var.set(f"{thick:.4g}")
                 self._x_var.set("")
                 self._y_var.set("")
@@ -653,7 +690,7 @@ class PropertiesPanel(ttk.Frame):
                 )
                 self._set_text(
                     self._info,
-                    f"Access Point\n\n"
+                    f"Punto de acceso\n\n"
                     f"ID: {ap.id}\n"
                     f"X: {ap.position.x:.2f} m\n"
                     f"Y: {ap.position.y:.2f} m\n"
@@ -666,12 +703,40 @@ class PropertiesPanel(ttk.Frame):
         elif selection.kind == SelectionKind.CLIENT:
             client = session.selected_client()
             if client:
+                # Estado RF en la posición exacta del cliente (mismo
+                # simulate_coverage que el heatmap; ver ui/client_signal).
+                state = session.client_state(client)
+                if state.associated:
+                    ap_line = f"AP asociado: {state.ap_id}"
+                else:
+                    # Sin señal utilizable: no hay asociación posible.
+                    ap_line = "AP asociado: Ninguno"
+                band_line = (
+                    f"Banda: {state.band_name or '—'}"
+                    if state.ap_id is not None
+                    else "Banda: —"
+                )
+                rssi_line = (
+                    f"RSSI: {state.rssi_dbm:.1f} dBm"
+                    if state.rssi_dbm is not None
+                    else "RSSI: —"
+                )
+                snr_line = (
+                    f"SNR: {state.snr_db:.1f} dB"
+                    if state.snr_db is not None
+                    else "SNR: —"
+                )
                 self._set_text(
                     self._info,
                     f"Cliente\n\n"
                     f"ID: {client.id}\n"
                     f"X: {client.position.x:.2f} m\n"
-                    f"Y: {client.position.y:.2f} m",
+                    f"Y: {client.position.y:.2f} m\n"
+                    f"{ap_line}\n"
+                    f"{band_line}\n"
+                    f"{rssi_line}\n"
+                    f"{snr_line}\n"
+                    f"Estado: {state.state}",
                 )
                 self._material_combo.configure(state="disabled")
                 self._thickness_entry.configure(state="disabled")
@@ -701,7 +766,7 @@ class PropertiesPanel(ttk.Frame):
                 wall_len = wall.segment.length if wall else 0.0
                 self._set_text(
                     self._info,
-                    f"Apertura ({opening.kind})\n\n"
+                    f"Apertura ({OPENING_KIND_LABELS.get(opening.kind, opening.kind)})\n\n"
                     f"ID: {opening.id}\n"
                     f"Pared: {opening.wall_id} ({wall_len:.2f} m)\n"
                     f"Tramo: [{opening.start_offset_m:.2f}, "
@@ -727,9 +792,8 @@ class PropertiesPanel(ttk.Frame):
                     f"Objeto\n\n"
                     f"ID: {obstacle.id}\n"
                     f"Nombre: {obstacle.name}\n"
-                    f"Tipo: {obstacle.kind}\n"
-                    f"Material: {obstacle.material.name} "
-                    f"({obstacle.material.id})\n"
+                    f"Tipo: {OBSTACLE_KIND_LABELS.get(obstacle.kind, obstacle.kind)}\n"
+                    f"Material: {obstacle.material.name}\n"
                     f"Rect: ({rect.x:.2f}, {rect.y:.2f}) + "
                     f"{rect.width:.2f} × {rect.height:.2f} m\n"
                     f"Override: {override or '—'}",
@@ -771,7 +835,9 @@ class PropertiesPanel(ttk.Frame):
             self._space_apply_btn.configure(state="disabled")
 
         if opening is not None:
-            self._opening_kind_var.set(opening.kind)
+            self._opening_kind_var.set(
+                OPENING_KIND_LABELS.get(opening.kind, opening.kind)
+            )
             self._opening_start_var.set(f"{opening.start_offset_m:.3f}")
             self._opening_end_var.set(f"{opening.end_offset_m:.3f}")
             self._opening_kind_combo.configure(state="readonly")
@@ -797,8 +863,12 @@ class PropertiesPanel(ttk.Frame):
         # --- Estados del marco Objeto (Fase 9) ---
         if obstacle is not None:
             self._obstacle_name_var.set(obstacle.name)
-            self._obstacle_kind_var.set(obstacle.kind)
-            self._obstacle_material_var.set(obstacle.material.id)
+            self._obstacle_kind_var.set(
+                OBSTACLE_KIND_LABELS.get(obstacle.kind, obstacle.kind)
+            )
+            self._obstacle_material_var.set(
+                self._material_label(obstacle.material.id)
+            )
             self._obstacle_override_var.set(
                 ", ".join(
                     f"{band}={value:g}"
@@ -835,7 +905,9 @@ class PropertiesPanel(ttk.Frame):
         if not wall:
             return
         try:
-            self._session.set_wall_material(wall.id, self._material_var.get())
+            self._session.set_wall_material(
+                wall.id, self._material_id(self._material_var.get())
+            )
         except (KeyError, ValueError) as exc:
             messagebox.showerror("Material", str(exc))
             return
@@ -916,7 +988,9 @@ class PropertiesPanel(ttk.Frame):
         except ValueError:
             messagebox.showerror("Apertura", "Offsets inválidos (metros).")
             return
-        kind = self._opening_kind_var.get()
+        kind = OPENING_KIND_IDS.get(
+            self._opening_kind_var.get(), self._opening_kind_var.get()
+        )
         try:
             session.set_opening_offsets(opening.id, start, end)
             if kind != opening.kind:
@@ -980,8 +1054,12 @@ class PropertiesPanel(ttk.Frame):
             self._session.set_obstacle_properties(
                 obstacle.id,
                 self._obstacle_name_var.get(),
-                kind=self._obstacle_kind_var.get(),
-                material_id=self._obstacle_material_var.get() or None,
+                kind=OBSTACLE_KIND_IDS.get(
+                    self._obstacle_kind_var.get(), self._obstacle_kind_var.get()
+                ),
+                material_id=(
+                    self._material_id(self._obstacle_material_var.get()) or None
+                ),
                 attenuation_override_db=override,
             )
         except (KeyError, ValueError) as exc:
