@@ -1,5 +1,41 @@
+# Byte-compiled / optimized / DLL files
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+
+# Testing & Coverage
 .pytest_cache/
-*.egg-info/
+.coverage
+htmlcov/
+.cache/
+
+# Environments & Packaging
 .venv/
+venv/
+env/
+ENV/
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Operating System files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE & Editor files
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+*~
+
+# Temporary Office lock files
+~$*.docx
+~$*.xlsx
+~$*.pptx
+# Material académico local y presentaciones
+Documentos/
+Guion expocision/
+Proyecto_WiFi_Biblioteca_Mejorado.docx

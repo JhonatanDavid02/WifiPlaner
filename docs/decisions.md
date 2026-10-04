@@ -1579,8 +1579,8 @@ siendo **`Project` + `Floor` + geometría**.
 
 ## Configuración del entorno de desarrollo
 
-- Python 3.14 instalado en `C:\Users\FAMILIA\.local\bin\python3.14.exe`.
-- Dependencias: `pytest`, `PyYAML` (ver `requirements.txt`).
+- Python 3.14 (compatible con Python >= 3.10).
+- Dependencias: `pytest`, `PyYAML` (ver `requirements.txt` en la raíz).
 - Ejecutar pruebas desde `wifi_planner/`:
   `python -m pytest`
 - Git inicializado con commit base `baseline: legacy project state...`.
