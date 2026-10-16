@@ -1,0 +1,1403 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WifiPlaner — Simulador & Planificador Wi-Fi 2D</title>
+  <meta name="description" content="Simulador y planificador interactivo de redes Wi-Fi en 2D. Modelado métrico, presupuesto de enlace (FSPL), mapas de calor (heatmaps), atenuación por materiales y evaluación de señal en tiempo real.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-dark: #080d1a;
+      --bg-card: rgba(15, 23, 42, 0.75);
+      --bg-panel: rgba(23, 33, 56, 0.85);
+      --border-subtle: rgba(255, 255, 255, 0.08);
+      --border-focus: #3b82f6;
+      --accent-blue: #3b82f6;
+      --accent-cyan: #06b6d4;
+      --accent-green: #10b981;
+      --accent-yellow: #f59e0b;
+      --accent-orange: #f97316;
+      --accent-red: #ef4444;
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: var(--font-sans);
+      background-color: var(--bg-dark);
+      color: var(--text-main);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow-x: hidden;
+    }
+
+    /* Top Navigation Bar */
+    header.app-header {
+      background: rgba(10, 15, 29, 0.9);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border-subtle);
+      padding: 0.75rem 1.5rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      gap: 1rem;
+    }
+
+    .brand-section {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .brand-logo {
+      width: 36px;
+      height: 36px;
+      border-radius: 8px;
+      background: linear-gradient(135deg, #2563eb, #06b6d4);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 0 16px rgba(6, 182, 212, 0.4);
+    }
+
+    .brand-title {
+      font-size: 1.15rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      background: linear-gradient(90deg, #ffffff, #93c5fd);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .brand-badge {
+      font-size: 0.7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      padding: 0.2rem 0.5rem;
+      border-radius: 999px;
+      background: rgba(16, 185, 129, 0.15);
+      color: var(--accent-green);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      margin-left: 0.25rem;
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+    }
+
+    .select-dropdown, .btn {
+      font-family: var(--font-sans);
+      font-size: 0.85rem;
+      padding: 0.45rem 0.85rem;
+      border-radius: 6px;
+      border: 1px solid var(--border-subtle);
+      background: var(--bg-panel);
+      color: var(--text-main);
+      cursor: pointer;
+      transition: all 0.2s ease;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+
+    .select-dropdown:hover, .btn:hover {
+      border-color: rgba(255, 255, 255, 0.2);
+      background: rgba(30, 41, 59, 0.9);
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, #2563eb, #1d4ed8);
+      border-color: #3b82f6;
+      font-weight: 500;
+      box-shadow: 0 0 12px rgba(37, 99, 235, 0.3);
+    }
+
+    .btn-primary:hover {
+      background: linear-gradient(135deg, #3b82f6, #2563eb);
+      box-shadow: 0 0 18px rgba(37, 99, 235, 0.5);
+    }
+
+    /* Main Workspace Layout */
+    .app-workspace {
+      display: flex;
+      flex: 1;
+      height: calc(100vh - 61px);
+      overflow: hidden;
+    }
+
+    /* Left Toolbar */
+    .left-toolbar {
+      width: 64px;
+      background: rgba(12, 18, 34, 0.85);
+      border-right: 1px solid var(--border-subtle);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 1rem 0;
+      gap: 0.75rem;
+      z-index: 20;
+    }
+
+    .tool-btn {
+      width: 44px;
+      height: 44px;
+      border-radius: 8px;
+      background: transparent;
+      border: 1px solid transparent;
+      color: var(--text-muted);
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 2px;
+      font-size: 0.65rem;
+      transition: all 0.2s ease;
+    }
+
+    .tool-btn:hover {
+      background: rgba(255, 255, 255, 0.05);
+      color: var(--text-main);
+    }
+
+    .tool-btn.active {
+      background: rgba(37, 99, 235, 0.2);
+      color: #60a5fa;
+      border-color: rgba(59, 130, 246, 0.5);
+      box-shadow: 0 0 12px rgba(59, 130, 246, 0.2);
+    }
+
+    /* Canvas Center Stage */
+    .canvas-stage {
+      flex: 1;
+      position: relative;
+      background: radial-gradient(circle at center, #0f172a 0%, #070b14 100%);
+      overflow: hidden;
+      cursor: crosshair;
+    }
+
+    #sim-canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    /* Floating Canvas Controls Overlay */
+    .canvas-overlay-stats {
+      position: absolute;
+      top: 1rem;
+      left: 1rem;
+      background: rgba(15, 23, 42, 0.85);
+      backdrop-filter: blur(8px);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      padding: 0.5rem 0.85rem;
+      font-size: 0.75rem;
+      font-family: var(--font-mono);
+      color: var(--text-muted);
+      pointer-events: none;
+      display: flex;
+      gap: 1rem;
+      align-items: center;
+    }
+
+    .stat-pill {
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+    }
+
+    .stat-pill strong {
+      color: #38bdf8;
+    }
+
+    /* Heatmap Color Legend */
+    .legend-bar {
+      position: absolute;
+      bottom: 1.25rem;
+      left: 1.25rem;
+      background: rgba(15, 23, 42, 0.85);
+      backdrop-filter: blur(10px);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      padding: 0.6rem 0.9rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+      z-index: 10;
+    }
+
+    .legend-title {
+      font-size: 0.7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+    }
+
+    .legend-gradient {
+      width: 220px;
+      height: 10px;
+      border-radius: 5px;
+      background: linear-gradient(to right, #10b981 0%, #84cc16 35%, #eab308 60%, #f97316 80%, #ef4444 100%);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+    }
+
+    .legend-labels {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.65rem;
+      font-family: var(--font-mono);
+      color: #cbd5e1;
+    }
+
+    /* Right Configuration & Telemetry Sidebar */
+    aside.sidebar {
+      width: 320px;
+      background: rgba(13, 19, 36, 0.9);
+      backdrop-filter: blur(12px);
+      border-left: 1px solid var(--border-subtle);
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+      z-index: 20;
+    }
+
+    .panel-section {
+      padding: 1rem;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .section-header {
+      font-size: 0.8rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #94a3b8;
+      margin-bottom: 0.85rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .control-row {
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+      margin-bottom: 0.85rem;
+    }
+
+    .control-label {
+      font-size: 0.78rem;
+      color: #cbd5e1;
+      display: flex;
+      justify-content: space-between;
+    }
+
+    .control-value {
+      font-family: var(--font-mono);
+      color: #38bdf8;
+      font-weight: 600;
+    }
+
+    .slider {
+      -webkit-appearance: none;
+      width: 100%;
+      height: 5px;
+      border-radius: 3px;
+      background: #1e293b;
+      outline: none;
+    }
+
+    .slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 15px;
+      height: 15px;
+      border-radius: 50%;
+      background: #3b82f6;
+      cursor: pointer;
+      box-shadow: 0 0 8px rgba(59, 130, 246, 0.6);
+    }
+
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.35rem 0;
+      font-size: 0.82rem;
+      color: #cbd5e1;
+    }
+
+    /* Switch styling */
+    .switch {
+      position: relative;
+      display: inline-block;
+      width: 36px;
+      height: 20px;
+    }
+
+    .switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+
+    .slider-round {
+      position: absolute;
+      cursor: pointer;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background-color: #334155;
+      transition: .3s;
+      border-radius: 20px;
+    }
+
+    .slider-round:before {
+      position: absolute;
+      content: "";
+      height: 14px;
+      width: 14px;
+      left: 3px;
+      bottom: 3px;
+      background-color: white;
+      transition: .3s;
+      border-radius: 50%;
+    }
+
+    input:checked + .slider-round {
+      background-color: #2563eb;
+    }
+
+    input:checked + .slider-round:before {
+      transform: translateX(16px);
+    }
+
+    /* Telemetry Card */
+    .telemetry-card {
+      background: rgba(15, 23, 42, 0.7);
+      border: 1px solid rgba(59, 130, 246, 0.25);
+      border-radius: 8px;
+      padding: 0.85rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      margin-top: 0.5rem;
+    }
+
+    .telemetry-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.5rem;
+      font-size: 0.75rem;
+    }
+
+    .telemetry-item {
+      background: rgba(30, 41, 59, 0.5);
+      border-radius: 6px;
+      padding: 0.45rem;
+    }
+
+    .telemetry-item span {
+      color: #94a3b8;
+      font-size: 0.65rem;
+      display: block;
+    }
+
+    .telemetry-item strong {
+      font-family: var(--font-mono);
+      font-size: 0.85rem;
+      color: #f8fafc;
+    }
+
+    .verdict-badge {
+      text-align: center;
+      padding: 0.4rem;
+      border-radius: 6px;
+      font-weight: 700;
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .verdict-aprobado {
+      background: rgba(16, 185, 129, 0.2);
+      color: #34d399;
+      border: 1px solid rgba(16, 185, 129, 0.4);
+    }
+
+    .verdict-riesgo {
+      background: rgba(245, 158, 11, 0.2);
+      color: #fbbf24;
+      border: 1px solid rgba(245, 158, 11, 0.4);
+    }
+
+    .verdict-fallido {
+      background: rgba(239, 68, 68, 0.2);
+      color: #f87171;
+      border: 1px solid rgba(239, 68, 68, 0.4);
+    }
+
+    /* Modal dialog */
+    .hint-box {
+      font-size: 0.75rem;
+      color: #94a3b8;
+      background: rgba(30, 41, 59, 0.4);
+      border-radius: 6px;
+      padding: 0.65rem;
+      line-height: 1.4;
+      margin-top: 0.75rem;
+      border-left: 3px solid #3b82f6;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Top Header Navigation -->
+  <header class="app-header">
+    <div class="brand-section">
+      <div class="brand-logo">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M5 12.55a11 11 0 0 1 14.08 0"/>
+          <path d="M1.42 9a16 16 0 0 1 21.16 0"/>
+          <path d="M8.53 16.11a6 6 0 0 1 6.95 0"/>
+          <circle cx="12" cy="20" r="1"/>
+        </svg>
+      </div>
+      <div>
+        <h1 class="brand-title">WifiPlaner</h1>
+      </div>
+      <span class="brand-badge">Simulador 2D</span>
+    </div>
+
+    <div class="header-actions">
+      <!-- Escenarios Pre-configurados -->
+      <select id="scenario-selector" class="select-dropdown" title="Seleccionar escenario de prueba">
+        <option value="biblioteca">📚 Biblioteca CUN (4 APs)</option>
+        <option value="oficina">🏢 Campus / Oficinas (50×30m)</option>
+        <option value="lab">🔬 Laboratorio (10×10m)</option>
+        <option value="vacio">✨ Plano Libre</option>
+      </select>
+
+      <button id="btn-add-ap" class="btn btn-primary">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+        Añadir AP
+      </button>
+
+      <button id="btn-add-client" class="btn">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="2" width="14" height="20" rx="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
+        Añadir Cliente
+      </button>
+
+      <button id="btn-reset-view" class="btn" title="Centrar plano">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+        Centrar
+      </button>
+    </div>
+  </header>
+
+  <!-- Main Workspace -->
+  <main class="app-workspace">
+    <!-- Left Toolbar -->
+    <div class="left-toolbar">
+      <button class="tool-btn active" id="tool-select" title="Seleccionar y arrastrar">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m3 3 7 18 3-7 7-3L3 3z"/><path d="m13 13 6 6"/></svg>
+        Mover
+      </button>
+      <button class="tool-btn" id="tool-ap" title="Colocar Punto de Acceso">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="2"/><path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5"/><path d="M7.8 7.8c-2.3 2.3-2.3 6.1 0 8.5"/></svg>
+        AP
+      </button>
+      <button class="tool-btn" id="tool-client" title="Colocar Dispositivo Cliente">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+        Cliente
+      </button>
+    </div>
+
+    <!-- Center Canvas Area -->
+    <div class="canvas-stage" id="stage-container">
+      <canvas id="sim-canvas"></canvas>
+
+      <!-- Stats pill -->
+      <div class="canvas-overlay-stats">
+        <div class="stat-pill">Plano: <strong id="lbl-space-dim">25.0 × 15.0 m</strong></div>
+        <div class="stat-pill">APs activos: <strong id="lbl-ap-count">4</strong></div>
+        <div class="stat-pill">Clientes: <strong id="lbl-client-count">1</strong></div>
+        <div class="stat-pill">Cursor: <strong id="lbl-cursor-pos">0.0, 0.0 m</strong></div>
+      </div>
+
+      <!-- Color Legend -->
+      <div class="legend-bar">
+        <div class="legend-title">Potencia Recibida (RSSI / P_rx)</div>
+        <div class="legend-gradient"></div>
+        <div class="legend-labels">
+          <span>≥ -50 dBm</span>
+          <span>-67</span>
+          <span>-75</span>
+          <span>-85</span>
+          <span>&lt; -90</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right Sidebar Controls -->
+    <aside class="sidebar">
+      <!-- Section 1: Configuración RF General -->
+      <div class="panel-section">
+        <div class="section-header">
+          <span>Parámetros de Radio</span>
+          <span style="font-size: 0.65rem; color: #38bdf8;">Motor FSPL F5</span>
+        </div>
+
+        <div class="control-row">
+          <div class="control-label">
+            <span>Potencia TX (P_tx)</span>
+            <span class="control-value" id="val-ptx">20 dBm</span>
+          </div>
+          <input type="range" class="slider" id="slider-ptx" min="10" max="30" step="1" value="20">
+        </div>
+
+        <div class="control-row">
+          <div class="control-label">
+            <span>Frecuencia / Banda</span>
+            <span class="control-value" id="val-band">2.4 GHz</span>
+          </div>
+          <select id="select-band" class="select-dropdown" style="width: 100%;">
+            <option value="2437">2.4 GHz (Canal 6 - 2437 MHz)</option>
+            <option value="5180">5.0 GHz (Canal 36 - 5180 MHz)</option>
+            <option value="6135">6.0 GHz (Canal 37 - 6135 MHz)</option>
+          </select>
+        </div>
+
+        <div class="control-row">
+          <div class="control-label">
+            <span>Margen de desvanecimiento (Lm)</span>
+            <span class="control-value" id="val-lm">10 dB</span>
+          </div>
+          <input type="range" class="slider" id="slider-lm" min="0" max="15" step="1" value="10">
+        </div>
+      </div>
+
+      <!-- Section 2: Capas de visualización -->
+      <div class="panel-section">
+        <div class="section-header">Visualización</div>
+
+        <div class="toggle-row">
+          <span>Mapa de Calor (Heatmap)</span>
+          <label class="switch">
+            <input type="checkbox" id="chk-heatmap" checked>
+            <span class="slider-round"></span>
+          </label>
+        </div>
+
+        <div class="toggle-row">
+          <span>Plano de fondo arquitectónico</span>
+          <label class="switch">
+            <input type="checkbox" id="chk-floorplan" checked>
+            <span class="slider-round"></span>
+          </label>
+        </div>
+
+        <div class="toggle-row">
+          <span>Líneas de enlace cliente ↔ AP</span>
+          <label class="switch">
+            <input type="checkbox" id="chk-links" checked>
+            <span class="slider-round"></span>
+          </label>
+        </div>
+
+        <div class="toggle-row">
+          <span>Etiquetas de Cobertura</span>
+          <label class="switch">
+            <input type="checkbox" id="chk-labels" checked>
+            <span class="slider-round"></span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Section 3: Telemetría de Cliente / Enlace Activo -->
+      <div class="panel-section">
+        <div class="section-header">
+          <span>Evaluación de Enlace</span>
+          <span style="font-size: 0.65rem; color: #10b981;">Tiempo Real</span>
+        </div>
+
+        <div id="telemetry-container">
+          <div class="telemetry-card">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <span style="font-weight: 600; font-size: 0.85rem;" id="tlm-client-name">Cliente 1</span>
+              <span style="font-size: 0.7rem; color: #38bdf8;" id="tlm-ap-name">Conectado a AP1</span>
+            </div>
+
+            <div class="telemetry-grid">
+              <div class="telemetry-item">
+                <span>Distancia 3D</span>
+                <strong id="tlm-dist">3.80 m</strong>
+              </div>
+              <div class="telemetry-item">
+                <span>P_rx (RSSI)</span>
+                <strong id="tlm-prx">-40.78 dBm</strong>
+              </div>
+              <div class="telemetry-item">
+                <span>Margen SOM</span>
+                <strong id="tlm-som">34.22 dB</strong>
+              </div>
+              <div class="telemetry-item">
+                <span>Relación SNR</span>
+                <strong id="tlm-snr">54.22 dB</strong>
+              </div>
+            </div>
+
+            <div class="verdict-badge verdict-aprobado" id="tlm-verdict">
+              COBERTURA APROBADA
+            </div>
+          </div>
+        </div>
+
+        <div class="hint-box">
+          💡 <strong>Interacción:</strong> Puedes arrastrar libremente los Puntos de Acceso (AP) y los Clientes en el plano. El cálculo de propagación en espacio libre (FSPL) y las pérdidas por paredes se recalculan en tiempo real.
+        </div>
+      </div>
+    </aside>
+  </main>
+
+  <!-- Core JavaScript Simulation Logic -->
+  <script>
+    // =========================================================================
+    // CONFIGURACIÓN Y MODELO DE DOMINIO RF
+    // =========================================================================
+    const CONFIG = {
+      p_tx_dbm: 20.0,
+      g_tx_dbi: 3.0,
+      l_tx_db: 1.0,
+      g_rx_dbi: 0.0,
+      l_rx_db: 1.0,
+      sensitivity_dbm: -75.0,
+      fade_margin_db: 10.0,
+      noise_floor_dbm: -95.0,
+      frequency_mhz: 2437.0, // 2.4 GHz
+      threshold_excellent: -50.0,
+      threshold_good: -67.0,
+      threshold_regular: -75.0,
+      threshold_weak: -85.0,
+    };
+
+    // Materiales con atenuación dB por banda
+    const MATERIALS = {
+      drywall: { name: "Yeso", color: "#64748b", loss24: 3.0, loss5: 4.0 },
+      brick: { name: "Ladrillo", color: "#b45309", loss24: 6.0, loss5: 10.0 },
+      concrete: { name: "Concreto", color: "#475569", loss24: 12.0, loss5: 18.0 },
+      glass: { name: "Vidrio", color: "#38bdf8", loss24: 3.0, loss5: 4.0 },
+    };
+
+    // Estado del Escenario Activo
+    let state = {
+      spaceWidthM: 25.0,
+      spaceHeightM: 15.0,
+      accessPoints: [],
+      clients: [],
+      walls: [],
+      selectedElement: null,
+      draggedElement: null,
+      activeTool: 'select',
+      showHeatmap: true,
+      showFloorplan: true,
+      showLinks: true,
+      showLabels: true,
+      bgImage: null,
+      scale: 1,
+      offsetX: 0,
+      offsetY: 0,
+      isPanning: false,
+      startPanX: 0,
+      startPanY: 0,
+    };
+
+    const canvas = document.getElementById('sim-canvas');
+    const ctx = canvas.getContext('2d');
+    const stageContainer = document.getElementById('stage-container');
+
+    // Carga de imagen de plano de redes si está disponible
+    const floorplanImg = new Image();
+    floorplanImg.src = 'assets/PlanoRedes.png';
+    floorplanImg.onload = () => {
+      state.bgImage = floorplanImg;
+      render();
+    };
+
+    // =========================================================================
+    // FÓRMULAS DE PROPAGACIÓN RF (FSPL & PRESUPUESTO DE ENLACE)
+    // =========================================================================
+
+    /**
+     * FSPL (Free Space Path Loss) en dB
+     * FSPL = 20*log10(d) + 20*log10(f) - 27.55
+     */
+    function computeFSPL(distanceM, freqMHz) {
+      if (distanceM <= 0.1) distanceM = 0.1; // Evitar log10(0)
+      return 20.0 * Math.log10(distanceM) + 20.0 * Math.log10(freqMHz) - 27.55;
+    }
+
+    /**
+     * Intersección 2D de segmentos (Ray casting contra paredes)
+     */
+    function segmentsIntersect(x1, y1, x2, y2, x3, y3, x4, y4) {
+      const denom = (y4 - y3) * (x2 - x1) - (x4 - x3) * (y2 - y1);
+      if (denom === 0) return false;
+      const ua = ((x4 - x3) * (y1 - y3) - (y4 - y3) * (x1 - x3)) / denom;
+      const ub = ((x2 - x1) * (y1 - y3) - (y2 - y1) * (x1 - x3)) / denom;
+      return ua >= 0 && ua <= 1 && ub >= 0 && ub <= 1;
+    }
+
+    /**
+     * Pérdidas acumuladas por paredes entre dos puntos
+     */
+    function computeWallLoss(x1, y1, x2, y2, freqMHz) {
+      let totalLoss = 0;
+      const is5G = freqMHz >= 5000;
+      for (const wall of state.walls) {
+        if (segmentsIntersect(x1, y1, x2, y2, wall.x1, wall.y1, wall.x2, wall.y2)) {
+          const mat = MATERIALS[wall.material] || MATERIALS.drywall;
+          totalLoss += is5G ? mat.loss5 : mat.loss24;
+        }
+      }
+      return totalLoss;
+    }
+
+    /**
+     * Presupuesto de Enlace (Link Budget): P_rx, SOM, SNR
+     */
+    function evaluateLink(ap, clientX, clientY) {
+      const dx = clientX - ap.x;
+      const dy = clientY - ap.y;
+      const dist = Math.hypot(dx, dy);
+
+      const freq = ap.frequency || CONFIG.frequency_mhz;
+      const fspl = computeFSPL(dist, freq);
+      const wallLoss = computeWallLoss(ap.x, ap.y, clientX, clientY, freq);
+
+      // P_rx = P_tx + G_tx - L_tx + G_rx - L_rx - FSPL - L_walls - L_m
+      const p_rx = CONFIG.p_tx_dbm + CONFIG.g_tx_dbi - CONFIG.l_tx_db +
+                   CONFIG.g_rx_dbi - CONFIG.l_rx_db - fspl - wallLoss - CONFIG.fade_margin_db;
+
+      const som = p_rx - CONFIG.sensitivity_dbm;
+      const snr = p_rx - CONFIG.noise_floor_dbm;
+
+      return {
+        distanceM: dist,
+        fspl: fspl,
+        wallLoss: wallLoss,
+        p_rx: p_rx,
+        som: som,
+        snr: snr
+      };
+    }
+
+    // Color del mapa de calor según dBm
+    function getRSSIColor(dbm, alpha = 0.55) {
+      if (dbm >= -50.0) {
+        return `rgba(16, 185, 129, ${alpha})`; // Verde excelente
+      } else if (dbm >= -67.0) {
+        const ratio = (dbm - (-67)) / 17;
+        const g = Math.round(185 + ratio * 30);
+        return `rgba(74, 222, 128, ${alpha})`; // Verde claro bueno
+      } else if (dbm >= -75.0) {
+        return `rgba(234, 179, 8, ${alpha})`; // Amarillo regular
+      } else if (dbm >= -85.0) {
+        return `rgba(249, 115, 22, ${alpha * 0.9})`; // Naranja débil
+      } else if (dbm >= -95.0) {
+        return `rgba(239, 68, 68, ${alpha * 0.5})`; // Rojo al borde
+      }
+      return `rgba(0, 0, 0, 0)`; // Sin cobertura
+    }
+
+    // =========================================================================
+    // ESCENARIOS PREDEFINIDOS
+    // =========================================================================
+
+    function loadScenario(type) {
+      state.accessPoints = [];
+      state.clients = [];
+      state.walls = [];
+      state.selectedElement = null;
+
+      if (type === 'biblioteca') {
+        state.spaceWidthM = 25.0;
+        state.spaceHeightM = 15.0;
+
+        // 4 APs del proyecto Biblioteca según golden data (zonas AP1-AP4)
+        state.accessPoints.push(
+          { id: "AP1", name: "AP1 - Sala General", x: 6.2, y: 4.8, channel: 1, frequency: 2437.0 },
+          { id: "AP2", name: "AP2 - Hemeroteca", x: 18.5, y: 4.5, channel: 6, frequency: 2437.0 },
+          { id: "AP3", name: "AP3 - Estudio Grupal", x: 6.5, y: 10.5, channel: 11, frequency: 2437.0 },
+          { id: "AP4", name: "AP4 - Sala Cómputo", x: 18.2, y: 10.8, channel: 6, frequency: 2437.0 }
+        );
+
+        // Paredes del edificio de la biblioteca
+        state.walls.push(
+          { x1: 1.0, y1: 1.0, x2: 24.0, y2: 1.0, material: "brick" },
+          { x1: 24.0, y1: 1.0, x2: 24.0, y2: 14.0, material: "brick" },
+          { x1: 24.0, y1: 14.0, x2: 1.0, y2: 14.0, material: "brick" },
+          { x1: 1.0, y1: 14.0, x2: 1.0, y2: 1.0, material: "brick" },
+          // Muro divisorio central
+          { x1: 12.5, y1: 1.0, x2: 12.5, y2: 6.5, material: "brick" },
+          { x1: 12.5, y1: 8.5, x2: 12.5, y2: 14.0, material: "brick" },
+          // División horizontal
+          { x1: 1.0, y1: 7.5, x2: 10.0, y2: 7.5, material: "drywall" },
+          { x1: 15.0, y1: 7.5, x2: 24.0, y2: 7.5, material: "drywall" }
+        );
+
+        // Cliente en la posición de prueba peor caso AP1 (3.80m)
+        state.clients.push({ id: "CLI-1", name: "Laptop Usuario", x: 9.0, y: 6.5 });
+
+      } else if (type === 'oficina') {
+        state.spaceWidthM = 50.0;
+        state.spaceHeightM = 30.0;
+
+        state.accessPoints.push(
+          { id: "AP-B1", name: "AP Norte 1", x: 8.0, y: 7.0, channel: 1, frequency: 2437.0 },
+          { id: "AP-B2", name: "AP Norte 2", x: 35.0, y: 7.0, channel: 6, frequency: 2437.0 },
+          { id: "AP-B3", name: "AP Sur 1", x: 8.0, y: 22.0, channel: 11, frequency: 2437.0 },
+          { id: "AP-B4", name: "AP Sur 2", x: 35.0, y: 22.0, channel: 6, frequency: 2437.0 }
+        );
+
+        // Corredor central y cubículos
+        state.walls.push(
+          { x1: 0.0, y1: 13.0, x2: 50.0, y2: 13.0, material: "brick" },
+          { x1: 0.0, y1: 17.0, x2: 50.0, y2: 17.0, material: "brick" },
+          { x1: 20.0, y1: 0.0, x2: 20.0, y2: 13.0, material: "concrete" },
+          { x1: 20.0, y1: 17.0, x2: 20.0, y2: 30.0, material: "concrete" }
+        );
+
+        state.clients.push({ id: "CLI-1", name: "Estación 1", x: 14.0, y: 6.0 });
+
+      } else if (type === 'lab') {
+        state.spaceWidthM = 10.0;
+        state.spaceHeightM = 10.0;
+
+        state.accessPoints.push(
+          { id: "AP-LAB", name: "AP Central", x: 3.0, y: 5.0, channel: 6, frequency: 2437.0 }
+        );
+
+        state.walls.push(
+          { x1: 5.0, y1: 0.0, x2: 5.0, y2: 6.0, material: "drywall" },
+          { x1: 5.0, y1: 8.0, x2: 5.0, y2: 10.0, material: "concrete" }
+        );
+
+        state.clients.push({ id: "CLI-1", name: "Sensor IoT", x: 7.5, y: 5.0 });
+
+      } else {
+        // Plano libre
+        state.spaceWidthM = 20.0;
+        state.spaceHeightM = 15.0;
+        state.accessPoints.push(
+          { id: "AP1", name: "AP 1", x: 10.0, y: 7.5, channel: 6, frequency: 2437.0 }
+        );
+        state.clients.push({ id: "CLI-1", name: "Dispositivo 1", x: 14.0, y: 7.5 });
+      }
+
+      updateOverlayStats();
+      centerView();
+      render();
+      updateTelemetry();
+    }
+
+    // =========================================================================
+    // SISTEMA DE COORDENADAS Y RENDERIZADO EN CANVAS
+    // =========================================================================
+
+    function resizeCanvas() {
+      const rect = stageContainer.getBoundingClientRect();
+      canvas.width = rect.width * window.devicePixelRatio;
+      canvas.height = rect.height * window.devicePixelRatio;
+      ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+      centerView();
+      render();
+    }
+
+    function centerView() {
+      const rect = stageContainer.getBoundingClientRect();
+      const margin = 50;
+      const scaleX = (rect.width - margin * 2) / state.spaceWidthM;
+      const scaleY = (rect.height - margin * 2) / state.spaceHeightM;
+      state.scale = Math.min(scaleX, scaleY);
+      state.offsetX = (rect.width - state.spaceWidthM * state.scale) / 2;
+      state.offsetY = (rect.height - state.spaceHeightM * state.scale) / 2;
+    }
+
+    function toPixels(mX, mY) {
+      return {
+        x: state.offsetX + mX * state.scale,
+        y: state.offsetY + mY * state.scale
+      };
+    }
+
+    function toMeters(pX, pY) {
+      return {
+        x: (pX - state.offsetX) / state.scale,
+        y: (pY - state.offsetY) / state.scale
+      };
+    }
+
+    // Dibujado del Heatmap
+    function drawHeatmap() {
+      if (!state.showHeatmap || state.accessPoints.length === 0) return;
+
+      const stepM = 0.5; // Resolución de malla (0.5 metros)
+      const rect = stageContainer.getBoundingClientRect();
+
+      for (let mx = 0; mx < state.spaceWidthM; mx += stepM) {
+        for (let my = 0; my < state.spaceHeightM; my += stepM) {
+          // Evaluar señal más fuerte de todos los APs
+          let maxPrx = -120;
+          for (const ap of state.accessPoints) {
+            const evalResult = evaluateLink(ap, mx + stepM / 2, my + stepM / 2);
+            if (evalResult.p_rx > maxPrx) {
+              maxPrx = evalResult.p_rx;
+            }
+          }
+
+          if (maxPrx >= -95) {
+            const p = toPixels(mx, my);
+            const w = stepM * state.scale;
+            const h = stepM * state.scale;
+            ctx.fillStyle = getRSSIColor(maxPrx, 0.42);
+            ctx.fillRect(p.x, p.y, w + 1, h + 1);
+          }
+        }
+      }
+    }
+
+    // Render principal
+    function render() {
+      const rect = stageContainer.getBoundingClientRect();
+      ctx.clearRect(0, 0, rect.width, rect.height);
+
+      const pOrigin = toPixels(0, 0);
+      const floorW = state.spaceWidthM * state.scale;
+      const floorH = state.spaceHeightM * state.scale;
+
+      // 1. Imagen arquitectónica de fondo
+      if (state.showFloorplan && state.bgImage) {
+        ctx.save();
+        ctx.globalAlpha = 0.35;
+        ctx.drawImage(state.bgImage, pOrigin.x, pOrigin.y, floorW, floorH);
+        ctx.restore();
+      }
+
+      // 2. Cuadrícula de referencia
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.05)";
+      ctx.lineWidth = 1;
+      for (let x = 0; x <= state.spaceWidthM; x += 2) {
+        const p1 = toPixels(x, 0);
+        const p2 = toPixels(x, state.spaceHeightM);
+        ctx.beginPath();
+        ctx.moveTo(p1.x, p1.y);
+        ctx.lineTo(p2.x, p2.y);
+        ctx.stroke();
+      }
+      for (let y = 0; y <= state.spaceHeightM; y += 2) {
+        const p1 = toPixels(0, y);
+        const p2 = toPixels(state.spaceWidthM, y);
+        ctx.beginPath();
+        ctx.moveTo(p1.x, p1.y);
+        ctx.lineTo(p2.x, p2.y);
+        ctx.stroke();
+      }
+
+      // Borde del plano
+      ctx.strokeStyle = "rgba(59, 130, 246, 0.4)";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(pOrigin.x, pOrigin.y, floorW, floorH);
+
+      // 3. Mapa de Calor (Heatmap)
+      drawHeatmap();
+
+      // 4. Paredes
+      for (const wall of state.walls) {
+        const p1 = toPixels(wall.x1, wall.y1);
+        const p2 = toPixels(wall.x2, wall.y2);
+        const mat = MATERIALS[wall.material] || MATERIALS.drywall;
+
+        ctx.strokeStyle = mat.color;
+        ctx.lineWidth = wall.material === "concrete" ? 6 : 4;
+        ctx.beginPath();
+        ctx.moveTo(p1.x, p1.y);
+        ctx.lineTo(p2.x, p2.y);
+        ctx.stroke();
+      }
+
+      // 5. Líneas de enlace Cliente ↔ AP más cercano
+      if (state.showLinks) {
+        for (const client of state.clients) {
+          let bestAp = null;
+          let bestPrx = -999;
+          for (const ap of state.accessPoints) {
+            const ev = evaluateLink(ap, client.x, client.y);
+            if (ev.p_rx > bestPrx) {
+              bestPrx = ev.p_rx;
+              bestAp = ap;
+            }
+          }
+
+          if (bestAp) {
+            const pClient = toPixels(client.x, client.y);
+            const pAp = toPixels(bestAp.x, bestAp.y);
+
+            ctx.save();
+            ctx.setLineDash([4, 4]);
+            ctx.strokeStyle = bestPrx >= -67 ? "rgba(52, 211, 153, 0.7)" : "rgba(245, 158, 11, 0.7)";
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(pClient.x, pClient.y);
+            ctx.lineTo(pAp.x, pAp.y);
+            ctx.stroke();
+            ctx.restore();
+          }
+        }
+      }
+
+      // 6. Puntos de Acceso (APs)
+      for (const ap of state.accessPoints) {
+        const p = toPixels(ap.x, ap.y);
+
+        // Halo de pulso
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 20, 0, Math.PI * 2);
+        ctx.fillStyle = "rgba(59, 130, 246, 0.2)";
+        ctx.fill();
+
+        // Icono AP
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 11, 0, Math.PI * 2);
+        ctx.fillStyle = "#2563eb";
+        ctx.fill();
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        // Onda circular
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
+        ctx.fillStyle = "#ffffff";
+        ctx.fill();
+
+        // Etiqueta
+        if (state.showLabels) {
+          ctx.fillStyle = "#ffffff";
+          ctx.font = "bold 11px Inter, sans-serif";
+          ctx.textAlign = "center";
+          ctx.fillText(ap.name, p.x, p.y - 18);
+          ctx.font = "9px JetBrains Mono, monospace";
+          ctx.fillStyle = "#93c5fd";
+          ctx.fillText(`CH ${ap.channel || 6}`, p.x, p.y + 22);
+        }
+      }
+
+      // 7. Clientes
+      for (const client of state.clients) {
+        const p = toPixels(client.x, client.y);
+
+        // Icono Cliente
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 9, 0, Math.PI * 2);
+        ctx.fillStyle = "#10b981";
+        ctx.fill();
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        if (state.showLabels) {
+          ctx.fillStyle = "#e2e8f0";
+          ctx.font = "bold 10px Inter, sans-serif";
+          ctx.textAlign = "center";
+          ctx.fillText(client.name, p.x, p.y - 14);
+        }
+      }
+    }
+
+    // Telemetría en tiempo real del primer cliente
+    function updateTelemetry() {
+      if (state.clients.length === 0 || state.accessPoints.length === 0) {
+        document.getElementById('tlm-client-name').textContent = "Sin cliente activo";
+        document.getElementById('tlm-ap-name').textContent = "---";
+        document.getElementById('tlm-dist').textContent = "---";
+        document.getElementById('tlm-prx').textContent = "---";
+        document.getElementById('tlm-som').textContent = "---";
+        document.getElementById('tlm-snr').textContent = "---";
+        const v = document.getElementById('tlm-verdict');
+        v.textContent = "SIN ENLACE";
+        v.className = "verdict-badge verdict-fallido";
+        return;
+      }
+
+      const client = state.clients[0];
+      let bestAp = null;
+      let bestEval = null;
+
+      for (const ap of state.accessPoints) {
+        const ev = evaluateLink(ap, client.x, client.y);
+        if (!bestEval || ev.p_rx > bestEval.p_rx) {
+          bestEval = ev;
+          bestAp = ap;
+        }
+      }
+
+      document.getElementById('tlm-client-name').textContent = client.name;
+      document.getElementById('tlm-ap-name').textContent = `Conectado a ${bestAp.name}`;
+      document.getElementById('tlm-dist').textContent = `${bestEval.distanceM.toFixed(2)} m`;
+      document.getElementById('tlm-prx').textContent = `${bestEval.p_rx.toFixed(2)} dBm`;
+      document.getElementById('tlm-som').textContent = `${bestEval.som.toFixed(2)} dB`;
+      document.getElementById('tlm-snr').textContent = `${bestEval.snr.toFixed(2)} dB`;
+
+      const v = document.getElementById('tlm-verdict');
+      if (bestEval.som >= 20.0 && bestEval.p_rx > CONFIG.threshold_good) {
+        v.textContent = "COBERTURA APROBADA (EXCELENTE)";
+        v.className = "verdict-badge verdict-aprobado";
+      } else if (bestEval.som >= 10.0 && bestEval.p_rx > CONFIG.threshold_weak) {
+        v.textContent = "COBERTURA EN RIESGO (MARGEN BAJO)";
+        v.className = "verdict-badge verdict-riesgo";
+      } else {
+        v.textContent = "SIN COBERTURA ÚTIL (FALLIDO)";
+        v.className = "verdict-badge verdict-fallido";
+      }
+    }
+
+    function updateOverlayStats() {
+      document.getElementById('lbl-space-dim').textContent = `${state.spaceWidthM.toFixed(1)} × ${state.spaceHeightM.toFixed(1)} m`;
+      document.getElementById('lbl-ap-count').textContent = state.accessPoints.length;
+      document.getElementById('lbl-client-count').textContent = state.clients.length;
+    }
+
+    // =========================================================================
+    // EVENTOS DE MOUSE & INTERACCIÓN EN CANVAS
+    // =========================================================================
+
+    function getMousePos(e) {
+      const rect = canvas.getBoundingClientRect();
+      return {
+        x: e.clientX - rect.left,
+        y: e.clientY - rect.top
+      };
+    }
+
+    canvas.addEventListener('mousedown', (e) => {
+      const m = getMousePos(e);
+      const world = toMeters(m.x, m.y);
+
+      // Si hace clic en botón derecho o con espacio presionado => Paneo
+      if (e.button === 1 || e.button === 2 || e.shiftKey) {
+        state.isPanning = true;
+        state.startPanX = e.clientX - state.offsetX;
+        state.startPanY = e.clientY - state.offsetY;
+        return;
+      }
+
+      // Comprobar si tocó un AP
+      for (const ap of state.accessPoints) {
+        if (Math.hypot(ap.x - world.x, ap.y - world.y) < 1.2) {
+          state.draggedElement = ap;
+          state.selectedElement = ap;
+          return;
+        }
+      }
+
+      // Comprobar si tocó un Cliente
+      for (const client of state.clients) {
+        if (Math.hypot(client.x - world.x, client.y - world.y) < 1.0) {
+          state.draggedElement = client;
+          state.selectedElement = client;
+          return;
+        }
+      }
+
+      // Herramienta AP
+      if (state.activeTool === 'ap') {
+        const newAp = {
+          id: `AP-${state.accessPoints.length + 1}`,
+          name: `AP ${state.accessPoints.length + 1}`,
+          x: Math.max(0.5, Math.min(state.spaceWidthM - 0.5, world.x)),
+          y: Math.max(0.5, Math.min(state.spaceHeightM - 0.5, world.y)),
+          channel: [1, 6, 11][state.accessPoints.length % 3],
+          frequency: CONFIG.frequency_mhz
+        };
+        state.accessPoints.push(newAp);
+        updateOverlayStats();
+        render();
+        updateTelemetry();
+        return;
+      }
+
+      // Herramienta Cliente
+      if (state.activeTool === 'client') {
+        const newClient = {
+          id: `CLI-${state.clients.length + 1}`,
+          name: `Dispositivo ${state.clients.length + 1}`,
+          x: Math.max(0.5, Math.min(state.spaceWidthM - 0.5, world.x)),
+          y: Math.max(0.5, Math.min(state.spaceHeightM - 0.5, world.y)),
+        };
+        state.clients.push(newClient);
+        updateOverlayStats();
+        render();
+        updateTelemetry();
+      }
+    });
+
+    canvas.addEventListener('mousemove', (e) => {
+      const m = getMousePos(e);
+      const world = toMeters(m.x, m.y);
+
+      document.getElementById('lbl-cursor-pos').textContent = `${world.x.toFixed(1)}, ${world.y.toFixed(1)} m`;
+
+      if (state.isPanning) {
+        state.offsetX = e.clientX - state.startPanX;
+        state.offsetY = e.clientY - state.startPanY;
+        render();
+        return;
+      }
+
+      if (state.draggedElement) {
+        state.draggedElement.x = Math.max(0.2, Math.min(state.spaceWidthM - 0.2, world.x));
+        state.draggedElement.y = Math.max(0.2, Math.min(state.spaceHeightM - 0.2, world.y));
+        render();
+        updateTelemetry();
+      }
+    });
+
+    window.addEventListener('mouseup', () => {
+      state.draggedElement = null;
+      state.isPanning = false;
+    });
+
+    canvas.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const zoomFactor = e.deltaY < 0 ? 1.1 : 0.9;
+      state.scale *= zoomFactor;
+      render();
+    });
+
+    // Controles de barra lateral
+    document.getElementById('slider-ptx').addEventListener('input', (e) => {
+      CONFIG.p_tx_dbm = parseFloat(e.target.value);
+      document.getElementById('val-ptx').textContent = `${CONFIG.p_tx_dbm} dBm`;
+      render();
+      updateTelemetry();
+    });
+
+    document.getElementById('slider-lm').addEventListener('input', (e) => {
+      CONFIG.fade_margin_db = parseFloat(e.target.value);
+      document.getElementById('val-lm').textContent = `${CONFIG.fade_margin_db} dB`;
+      render();
+      updateTelemetry();
+    });
+
+    document.getElementById('select-band').addEventListener('change', (e) => {
+      CONFIG.frequency_mhz = parseFloat(e.target.value);
+      const label = e.target.options[e.target.selectedIndex].text.split(' ')[0];
+      document.getElementById('val-band').textContent = label;
+      for (const ap of state.accessPoints) {
+        ap.frequency = CONFIG.frequency_mhz;
+      }
+      render();
+      updateTelemetry();
+    });
+
+    document.getElementById('chk-heatmap').addEventListener('change', (e) => {
+      state.showHeatmap = e.target.checked;
+      render();
+    });
+
+    document.getElementById('chk-floorplan').addEventListener('change', (e) => {
+      state.showFloorplan = e.target.checked;
+      render();
+    });
+
+    document.getElementById('chk-links').addEventListener('change', (e) => {
+      state.showLinks = e.target.checked;
+      render();
+    });
+
+    document.getElementById('chk-labels').addEventListener('change', (e) => {
+      state.showLabels = e.target.checked;
+      render();
+    });
+
+    document.getElementById('scenario-selector').addEventListener('change', (e) => {
+      loadScenario(e.target.value);
+    });
+
+    document.getElementById('btn-add-ap').addEventListener('click', () => {
+      const newAp = {
+        id: `AP-${state.accessPoints.length + 1}`,
+        name: `AP ${state.accessPoints.length + 1}`,
+        x: state.spaceWidthM / 2 + (Math.random() - 0.5) * 4,
+        y: state.spaceHeightM / 2 + (Math.random() - 0.5) * 4,
+        channel: [1, 6, 11][state.accessPoints.length % 3],
+        frequency: CONFIG.frequency_mhz
+      };
+      state.accessPoints.push(newAp);
+      updateOverlayStats();
+      render();
+      updateTelemetry();
+    });
+
+    document.getElementById('btn-add-client').addEventListener('click', () => {
+      const newClient = {
+        id: `CLI-${state.clients.length + 1}`,
+        name: `Dispositivo ${state.clients.length + 1}`,
+        x: state.spaceWidthM / 2 + (Math.random() - 0.5) * 6,
+        y: state.spaceHeightM / 2 + (Math.random() - 0.5) * 6,
+      };
+      state.clients.push(newClient);
+      updateOverlayStats();
+      render();
+      updateTelemetry();
+    });
+
+    document.getElementById('btn-reset-view').addEventListener('click', () => {
+      centerView();
+      render();
+    });
+
+    // Botones de herramientas
+    const toolBtns = document.querySelectorAll('.tool-btn');
+    toolBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        toolBtns.forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        if (btn.id === 'tool-select') state.activeTool = 'select';
+        if (btn.id === 'tool-ap') state.activeTool = 'ap';
+        if (btn.id === 'tool-client') state.activeTool = 'client';
+      });
+    });
+
+    window.addEventListener('resize', resizeCanvas);
+
+    // Inicialización al cargar la página
+    window.addEventListener('DOMContentLoaded', () => {
+      resizeCanvas();
+      loadScenario('biblioteca');
+    });
+  </script>
+</body>
+</html>
